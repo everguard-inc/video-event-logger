@@ -1,0 +1,13 @@
+.git
+.venv
+.venv-packaging
+__pycache__
+*.py[cod]
+.DS_Store
+build
+dist
+release
+test_videos
+.pytest_cache
+.mypy_cache
+.ruff_cache

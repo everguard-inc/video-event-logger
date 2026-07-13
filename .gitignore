@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+.venv-packaging/
+.venv-packaging*/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+release/
+test_videos/

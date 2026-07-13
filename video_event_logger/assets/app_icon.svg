@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Video Event Logger icon">
+  <defs>
+    <linearGradient id="bg" x1="72" y1="52" x2="440" y2="460" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#182330"/>
+      <stop offset="0.55" stop-color="#243348"/>
+      <stop offset="1" stop-color="#151a24"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="132" y1="138" x2="380" y2="326" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e8f6f3"/>
+      <stop offset="1" stop-color="#9ecdc6"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="154" y1="348" x2="370" y2="348" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#efb56a"/>
+      <stop offset="0.48" stop-color="#f07f5f"/>
+      <stop offset="1" stop-color="#64c4ac"/>
+    </linearGradient>
+    <filter id="shadow" x="30" y="26" width="452" height="464" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="20" stdDeviation="22" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect x="58" y="46" width="396" height="420" rx="92" fill="url(#bg)" filter="url(#shadow)"/>
+  <rect x="94" y="94" width="324" height="238" rx="38" fill="#0f141d"/>
+  <rect x="118" y="118" width="276" height="190" rx="24" fill="url(#screen)"/>
+
+  <path d="M225 166c0-9 10-15 18-10l80 48c8 5 8 17 0 22l-80 48c-8 5-18-1-18-10V166Z" fill="#17212e"/>
+
+  <rect x="117" y="348" width="278" height="28" rx="14" fill="#0f141d"/>
+  <rect x="145" y="354" width="224" height="16" rx="8" fill="url(#accent)"/>
+
+  <rect x="154" y="334" width="20" height="58" rx="10" fill="#efb56a"/>
+  <rect x="338" y="334" width="20" height="58" rx="10" fill="#64c4ac"/>
+
+  <circle cx="154" cy="362" r="7" fill="#fff7e8"/>
+  <circle cx="348" cy="362" r="7" fill="#e8fff9"/>
+
+  <path d="M136 417h240" stroke="#f3f6f8" stroke-width="16" stroke-linecap="round" opacity="0.9"/>
+  <path d="M136 417h118" stroke="#efb56a" stroke-width="16" stroke-linecap="round"/>
+</svg>
