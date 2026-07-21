@@ -37,8 +37,11 @@ class EventLoggingController:
         self.current_video_path = None  # type: Optional[Path]
         self.document = None  # type: Optional[AnnotationDocument]
         self.last_result_path = None  # type: Optional[Path]
+        self.result_save_status = "missing"
+        self.autosave_save_status = "missing"
         self.active_event_type = DEFAULT_EVENT_TYPE
         self.is_applying_event_type = False
+        self.is_completing_interval = False
         self.pending_scrub_seconds = None  # type: Optional[float]
         self.playback_interval_end_seconds = None  # type: Optional[float]
         self.shortcuts = []
@@ -54,9 +57,10 @@ class EventLoggingController:
         self._connect_shortcuts()
         self._set_video_loaded(False)
         self._set_event_type_lamp("active")
-        self._set_save_status("not_saved")
+        self._set_persistence_status("missing", "missing")
         self.workspace.set_rotation_label(self.video_player.rotation_degrees)
         self.workspace.set_rotation_enabled(False)
+        self.workspace.set_pending_interval_start(None)
 
         self.timer = QTimer(window)
         self.timer.setInterval(300)
@@ -98,7 +102,7 @@ class EventLoggingController:
         intervals_panel.edit_requested.connect(self._edit_interval_at_row)
         intervals_panel.delete_requested.connect(self._delete_interval_at_row)
         intervals_panel.jump_requested.connect(self._jump_to_interval_start)
-        export_actions.finish_button.clicked.connect(self.finish_and_save)
+        export_actions.save_now_button.clicked.connect(self.validate_and_save)
         export_actions.open_result_folder_button.clicked.connect(self.open_result_folder)
 
     def _connect_shortcuts(self) -> None:
@@ -150,7 +154,9 @@ class EventLoggingController:
         existing_paths = self.project_service.existing_paths(video_path.name)
         document = self.project_service.create_empty_document(video_path.name)
         resume_position = False
-        initial_save_status = "not_saved"
+        continued_existing_work = False
+        initial_result_status = "stale" if "final" in existing_paths else "missing"
+        initial_autosave_status = "stale" if "autosave" in existing_paths else "missing"
 
         if existing_paths:
             action = self._ask_existing_project_action()
@@ -161,6 +167,8 @@ class EventLoggingController:
                     return
                 self.project_service.delete_project(video_path.name)
                 self._set_status_text("project deleted")
+                initial_result_status = "missing"
+                initial_autosave_status = "missing"
             elif action == "start_over":
                 if not self._confirm_start_over():
                     return
@@ -171,7 +179,11 @@ class EventLoggingController:
                 try:
                     document = self.project_service.load_document(source_path, video_path.name)
                     self._set_status_text("loaded")
-                    initial_save_status = "autosaved" if source_path == existing_paths.get("autosave") else "saved"
+                    if source_path == existing_paths.get("autosave"):
+                        initial_autosave_status = "current"
+                    else:
+                        initial_result_status = "current"
+                    continued_existing_work = True
                 except CorruptedAnnotationError as exc:
                     document = self.project_service.create_empty_document(video_path.name)
                     QMessageBox.warning(
@@ -194,7 +206,9 @@ class EventLoggingController:
         self.current_video_path = video_path
         self.document = document
         self.annotation_service.set_document(document)
-        self._set_save_status(initial_save_status)
+        _, final_path = self.project_service.paths_for_video_name(document.video_name)
+        self.last_result_path = final_path if final_path.exists() else None
+        self._set_persistence_status(initial_result_status, initial_autosave_status)
         self._set_video_loaded(True)
         self.workspace.set_rotation_label(self.video_player.rotation_degrees)
         self._refresh_duration_metadata()
@@ -203,6 +217,11 @@ class EventLoggingController:
         target_position = 0.0
         if resume_position and self.document is not None:
             target_position = self.document.last_playback_position_seconds
+        if continued_existing_work:
+            self._save_checkpoint(
+                "Existing work loaded; result JSON and recovery autosave are up to date.",
+                update_runtime=False,
+            )
         self._prepare_video_preview(target_position)
         self._clear_event_type_focus()
 
@@ -218,7 +237,12 @@ class EventLoggingController:
             QTimer.singleShot(0, self._clear_event_type_focus)
             if self.document is not None:
                 self.document.current_event_type = self.active_event_type
-                self._set_save_status("not_saved")
+                update_result = self._should_update_result_file()
+                if update_result:
+                    message = "Event type updated; result JSON and recovery autosave are up to date."
+                else:
+                    message = "Event type autosaved; result JSON will be created with the first interval."
+                self._save_checkpoint(message, update_result=update_result)
         finally:
             self.is_applying_event_type = False
 
@@ -234,16 +258,22 @@ class EventLoggingController:
     def set_interval_start(self) -> None:
         if not self._has_loaded_video():
             return
-        self.annotation_service.start_interval(self.video_player.get_time_seconds())
-        self._set_status_text("start set")
+        start_seconds = self.video_player.get_time_seconds()
+        self.annotation_service.start_interval(start_seconds)
+        self.workspace.set_pending_interval_start(start_seconds)
+        self._set_status_text("Interval start set. Press End or D to finish.")
 
     def set_interval_end(self) -> None:
         if not self._has_loaded_video():
             return
+        self._complete_pending_interval(self.video_player.get_time_seconds())
+
+    def _complete_pending_interval(self, end_seconds: float, automatic: bool = False) -> None:
+        if self.is_completing_interval:
+            return
         if not self.annotation_service.has_pending_interval():
             QMessageBox.warning(self.window, "Missing start", "Set interval start first.")
             return
-        end_seconds = self.video_player.get_time_seconds()
         start_seconds = self.annotation_service.pending_start_seconds
         if start_seconds is None:
             QMessageBox.warning(self.window, "Missing start", "Set interval start first.")
@@ -252,33 +282,45 @@ class EventLoggingController:
             QMessageBox.warning(self.window, "Invalid interval", "Interval start must be before interval end.")
             return
 
-        event_type = self._current_event_type()
-        comment = ""
-        if self.workspace.show_popup_after_interval():
-            was_playing = self.video_player.is_playing()
-            self.video_player.pause()
-            dialog = IntervalDialog(start_seconds, end_seconds, event_type, self.window)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                self.annotation_service.cancel_pending_interval()
-                self._set_status_text("Interval canceled")
-                if was_playing:
-                    self.video_player.play()
-                return
-            event_type, comment = dialog.values()
-
+        self.is_completing_interval = True
         try:
-            self.annotation_service.end_interval(end_seconds, event_type, comment)
-        except MissingIntervalStartError:
-            QMessageBox.warning(self.window, "Missing start", "Set interval start first.")
-            return
-        except InvalidIntervalError:
-            QMessageBox.warning(self.window, "Invalid interval", "Interval start must be before interval end.")
-            return
-        self._refresh_table()
-        self._refresh_counts()
-        self._autosave("Autosaved interval.")
+            event_type = self._current_event_type()
+            comment = ""
+            if self.workspace.show_popup_after_interval():
+                was_playing = self.video_player.is_playing()
+                self.video_player.pause()
+                dialog = IntervalDialog(start_seconds, end_seconds, event_type, self.window)
+                if dialog.exec() != QDialog.DialogCode.Accepted:
+                    self.annotation_service.cancel_pending_interval()
+                    self.workspace.set_pending_interval_start(None)
+                    self._set_status_text("Interval canceled")
+                    if was_playing:
+                        self.video_player.play()
+                    return
+                event_type, comment = dialog.values()
 
-    def finish_and_save(self) -> None:
+            try:
+                self.annotation_service.end_interval(end_seconds, event_type, comment)
+            except MissingIntervalStartError:
+                QMessageBox.warning(self.window, "Missing start", "Set interval start first.")
+                return
+            except InvalidIntervalError:
+                QMessageBox.warning(self.window, "Invalid interval", "Interval start must be before interval end.")
+                return
+
+            self.workspace.set_pending_interval_start(None)
+            self._refresh_table()
+            self._refresh_counts()
+            if automatic:
+                self._save_checkpoint(
+                    "Interval reached the end of the video; result JSON and recovery autosave updated."
+                )
+            else:
+                self._save_checkpoint("Interval added; result JSON and recovery autosave updated.")
+        finally:
+            self.is_completing_interval = False
+
+    def validate_and_save(self) -> None:
         if self.document is None:
             QMessageBox.warning(self.window, "No video", "Video is not loaded.")
             return
@@ -296,13 +338,10 @@ class EventLoggingController:
             )
             if response != QMessageBox.StandardButton.Yes:
                 return
-        try:
-            self.last_result_path = self.project_service.save_final(self.document)
-        except Exception as exc:
-            QMessageBox.warning(self.window, "Save failed", "Could not save final JSON:\n%s" % exc)
-            return
-        self._set_save_status("saved")
-        self._set_status_text("saved")
+        self._save_checkpoint(
+            "Validated: result JSON and recovery autosave are up to date.",
+            update_result=True,
+        )
 
     def open_result_folder(self) -> None:
         path = self._result_path_for_ui()
@@ -312,7 +351,12 @@ class EventLoggingController:
 
     def close_event(self, event) -> None:  # type: ignore[no-untyped-def]
         if self.document is not None:
-            self._autosave("Saved current position before closing.")
+            update_result = self._should_update_result_file()
+            if update_result:
+                message = "Current position saved to result JSON and recovery autosave."
+            else:
+                message = "Current position saved to recovery autosave."
+            self._save_checkpoint(message, update_result=update_result)
         event.accept()
 
     def _delete_interval_at_row(self, row: int) -> None:
@@ -324,7 +368,7 @@ class EventLoggingController:
             return
         self._refresh_table()
         self._refresh_counts()
-        self._autosave("Autosaved after delete.")
+        self._save_checkpoint("Interval deleted; result JSON and recovery autosave updated.")
 
     def _edit_interval_at_row(self, row: int) -> None:
         interval = self._interval_at_row(row)
@@ -347,7 +391,7 @@ class EventLoggingController:
             return
         self._refresh_table()
         self._refresh_counts()
-        self._autosave("Autosaved after edit.")
+        self._save_checkpoint("Interval edited; result JSON and recovery autosave updated.")
 
     def _play_interval_at_row(self, row: int) -> None:
         interval = self._interval_at_row(row)
@@ -421,19 +465,74 @@ class EventLoggingController:
         if not self.annotation_service.has_pending_interval():
             return
         self.annotation_service.cancel_pending_interval()
+        self.workspace.set_pending_interval_start(None)
         self._set_status_text("Interval canceled")
 
-    def _autosave(self, status_message: str) -> None:
+    def _save_checkpoint(
+        self,
+        status_message: str,
+        update_result: bool = True,
+        update_runtime: bool = True,
+    ) -> bool:
         if self.document is None:
-            return
-        self._update_document_runtime_state()
+            return False
+        if update_runtime:
+            self._update_document_runtime_state()
+
+        autosave_error = None  # type: Optional[Exception]
+        result_error = None  # type: Optional[Exception]
         try:
             self.project_service.save_autosave(self.document)
-            self._set_save_status("autosaved")
-            self._set_status_text("autosaved")
             self.workspace.show_autosave_indicator()
         except Exception as exc:
-            QMessageBox.warning(self.window, "Autosave failed", "Could not autosave:\n%s" % exc)
+            autosave_error = exc
+
+        if update_result:
+            try:
+                self.last_result_path = self.project_service.save_final(self.document)
+            except Exception as exc:
+                result_error = exc
+
+        result_status = self.result_save_status
+        if update_result:
+            result_status = "failed" if result_error is not None else "current"
+        autosave_status = "failed" if autosave_error is not None else "current"
+        self._set_persistence_status(result_status, autosave_status)
+
+        if result_error is None and autosave_error is None:
+            self._set_status_text(status_message)
+            return True
+
+        if update_result and result_error is not None and autosave_error is not None:
+            status_text = "Could not update result JSON or recovery autosave."
+            warning_text = (
+                "Could not save result JSON:\n%s\n\n"
+                "Could not save recovery autosave:\n%s" % (result_error, autosave_error)
+            )
+        elif update_result and result_error is not None:
+            status_text = "Result JSON save failed; recovery autosave is current."
+            warning_text = (
+                "Recovery autosave was updated, but result JSON could not be saved:\n%s"
+                % result_error
+            )
+        elif update_result:
+            status_text = "Result JSON is current; recovery autosave failed."
+            warning_text = "Result JSON was updated, but recovery autosave could not be saved:\n%s" % autosave_error
+        else:
+            status_text = "Recovery autosave failed; result JSON has not been created yet."
+            warning_text = "Could not save recovery autosave:\n%s" % autosave_error
+
+        self._set_status_text(status_text)
+        QMessageBox.warning(self.window, "JSON save incomplete", warning_text)
+        return False
+
+    def _should_update_result_file(self) -> bool:
+        if self.document is None:
+            return False
+        if self.document.intervals:
+            return True
+        _, final_path = self.project_service.paths_for_video_name(self.document.video_name)
+        return final_path.exists()
 
     def _update_document_runtime_state(self) -> None:
         if self.document is None:
@@ -454,6 +553,7 @@ class EventLoggingController:
         )
 
     def _refresh_ui_from_document(self) -> None:
+        self.workspace.set_pending_interval_start(None)
         if self.document is None:
             self.workspace.set_video_name("N/A")
             self.workspace.clear_intervals()
@@ -484,6 +584,7 @@ class EventLoggingController:
         current = self.video_player.get_time_seconds()
         self._update_timeline(current)
         self._stop_interval_playback_if_needed(current)
+        self._finish_pending_interval_at_video_end(current)
         self._refresh_rotation_enabled()
         if self.document is not None:
             old_duration = self.document.video_metadata.duration_seconds
@@ -621,8 +722,10 @@ class EventLoggingController:
     def _set_event_type_lamp(self, state: str) -> None:
         self.workspace.set_event_type_lamp(state)
 
-    def _set_save_status(self, status: str) -> None:
-        self.workspace.set_save_status(status)
+    def _set_persistence_status(self, result_status: str, autosave_status: str) -> None:
+        self.result_save_status = result_status
+        self.autosave_save_status = autosave_status
+        self.workspace.set_persistence_status(result_status, autosave_status)
 
     def _set_status_text(self, text: str) -> None:
         self.workspace.set_status_text(text)
@@ -660,6 +763,22 @@ class EventLoggingController:
             self.video_player.pause()
             self.playback_interval_end_seconds = None
             self._set_status_text("interval playback finished")
+
+    def _finish_pending_interval_at_video_end(self, current_seconds: float) -> None:
+        if self.is_completing_interval or not self.annotation_service.has_pending_interval():
+            return
+        duration_seconds = self.video_player.get_duration_seconds()
+        start_seconds = self.annotation_service.pending_start_seconds
+        if duration_seconds is None or duration_seconds <= 0:
+            return
+        if start_seconds is None or start_seconds >= duration_seconds:
+            return
+
+        reached_end = self.video_player.is_ended()
+        if not reached_end and not self.video_player.is_playing():
+            reached_end = current_seconds >= max(0.0, duration_seconds - 0.05)
+        if reached_end:
+            self._complete_pending_interval(duration_seconds, automatic=True)
 
     def _prepare_video_preview(self, position_seconds: float) -> None:
         self.video_player.play()

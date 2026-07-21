@@ -45,11 +45,14 @@ class MetadataPanel(QFrame):
         metadata_layout.setVerticalSpacing(3)
         metadata_layout.setHorizontalSpacing(4)
 
-        self.save_status_lamp = QLabel()
-        self.save_status_lamp.setFixedSize(12, 12)
+        self.result_status_lamp = QLabel()
+        self.result_status_lamp.setFixedSize(12, 12)
+        self.autosave_status_lamp = QLabel()
+        self.autosave_status_lamp.setFixedSize(12, 12)
         self.status_label = QLabel("")
         self.status_label.setMaximumHeight(20)
         self.status_label.setVisible(False)
+        self.status_label.setStyleSheet("color: #555;")
         self.video_name_label = QLabel("N/A")
         self.autosave_indicator = QProgressBar()
         self.autosave_indicator.setRange(0, 0)
@@ -64,19 +67,23 @@ class MetadataPanel(QFrame):
         self.event_type_lamp = QLabel()
         self.event_type_lamp.setFixedSize(12, 12)
 
-        metadata_layout.addWidget(QLabel("status"), 0, 0)
-        metadata_layout.addWidget(self.save_status_lamp, 0, 1)
-        metadata_layout.addWidget(self.autosave_indicator, 0, 2)
+        metadata_layout.addWidget(QLabel("result JSON"), 0, 0)
+        metadata_layout.addWidget(self.result_status_lamp, 0, 1)
+        metadata_layout.addWidget(QLabel("autosave"), 0, 2)
+        metadata_layout.addWidget(self.autosave_status_lamp, 0, 3)
+        metadata_layout.addWidget(self.autosave_indicator, 0, 4)
+        metadata_layout.addWidget(self.status_label, 0, 5)
         metadata_layout.addWidget(QLabel("video"), 1, 0)
-        metadata_layout.addWidget(self.video_name_label, 1, 1, 1, 4)
+        metadata_layout.addWidget(self.video_name_label, 1, 1, 1, 5)
         metadata_layout.addWidget(QLabel("event_type"), 2, 0)
         metadata_layout.addWidget(self.event_type_input, 2, 1)
         metadata_layout.addWidget(self.event_type_lamp, 2, 2)
-        metadata_layout.setColumnStretch(4, 1)
+        metadata_layout.setColumnStretch(5, 1)
 
         layout.addLayout(action_layout)
         layout.addWidget(divider)
         layout.addLayout(metadata_layout, 1)
+        self.set_persistence_status("missing", "missing")
 
     def show_popup_after_interval(self) -> bool:
         return self.show_popup_checkbox.isChecked()
@@ -103,13 +110,27 @@ class MetadataPanel(QFrame):
         self.event_type_lamp.setStyleSheet("border-radius: 6px; background: %s;" % color)
         self.event_type_lamp.setToolTip(tooltip)
 
-    def set_save_status(self, status: str) -> None:
-        color = "#c62828" if status == "not_saved" else "#1c9c4a"
-        self.save_status_lamp.setStyleSheet("border-radius: 6px; background: %s;" % color)
-        self.save_status_lamp.setToolTip(status)
+    def set_persistence_status(self, result_status: str, autosave_status: str) -> None:
+        self._set_persistence_lamp(self.result_status_lamp, "Result JSON", result_status)
+        self._set_persistence_lamp(self.autosave_status_lamp, "Recovery autosave", autosave_status)
+
+    @staticmethod
+    def _set_persistence_lamp(lamp: QLabel, label: str, status: str) -> None:
+        appearances = {
+            "current": ("#1c9c4a", "up to date"),
+            "stale": ("#d6a800", "out of date"),
+            "failed": ("#c62828", "save failed"),
+            "missing": ("#777777", "not created yet"),
+        }
+        color, description = appearances.get(status, appearances["missing"])
+        lamp.setStyleSheet("border-radius: 6px; background: %s;" % color)
+        lamp.setToolTip("%s: %s" % (label, description))
 
     def set_status_text(self, text: str) -> None:
-        self.status_label.setText(text)
+        clean_text = text.strip()
+        self.status_label.setText(clean_text)
+        self.status_label.setToolTip(clean_text)
+        self.status_label.setVisible(bool(clean_text))
 
     def show_autosave_indicator(self) -> None:
         self.autosave_indicator.setVisible(True)

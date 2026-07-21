@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_EXECUTABLE="$APP_DIR/video-event-logger"
+BUILD_INFO="$APP_DIR/BUILD_INFO.txt"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/video-event-logger"
+LOG_FILE="$STATE_DIR/application.log"
+LIBVLC_PATH=""
+VLC_PLUGIN_DIR=""
+
+mkdir -p "$STATE_DIR"
+
+report_error() {
+  printf '%s\n' "$@" | tee -a "$LOG_FILE" >&2
+}
+
+find_libvlc_path() {
+  local candidate detected
+  for candidate in \
+    /usr/lib/x86_64-linux-gnu/libvlc.so.5 \
+    /lib/x86_64-linux-gnu/libvlc.so.5 \
+    /usr/local/lib/libvlc.so.5; do
+    if [ -r "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  if command -v ldconfig >/dev/null 2>&1; then
+    detected="$(ldconfig -p 2>/dev/null | awk '$1 == "libvlc.so.5" { print $NF; exit }')"
+    if [ -n "$detected" ] && [ -r "$detected" ]; then
+      printf '%s\n' "$detected"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+find_vlc_plugin_dir() {
+  local candidate detected libvlc_dir
+  libvlc_dir="$(dirname "$LIBVLC_PATH")"
+  for candidate in \
+    "$libvlc_dir/vlc/plugins" \
+    /usr/lib/x86_64-linux-gnu/vlc/plugins \
+    /usr/lib/vlc/plugins \
+    /usr/local/lib/vlc/plugins; do
+    if [ -d "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  detected="$(find /usr/lib /usr/local/lib -type d -path '*/vlc/plugins' -print -quit 2>/dev/null || true)"
+  if [ -n "$detected" ]; then
+    printf '%s\n' "$detected"
+    return 0
+  fi
+  return 1
+}
+
+if [ ! -x "$APP_EXECUTABLE" ]; then
+  report_error "Video Event Logger executable is missing or not executable:" "  $APP_EXECUTABLE"
+  exit 1
+fi
+
+if [ "$(uname -m)" != "x86_64" ]; then
+  report_error "Video Event Logger requires Ubuntu 20.04 x86_64." "Detected architecture: $(uname -m)"
+  exit 1
+fi
+
+LIBVLC_PATH="$(find_libvlc_path || true)"
+if ! command -v vlc >/dev/null 2>&1 || [ -z "$LIBVLC_PATH" ]; then
+  report_error \
+    "VLC/libVLC is required but was not found." \
+    "Detected vlc command: $(command -v vlc 2>/dev/null || echo missing)" \
+    "Detected libVLC: ${LIBVLC_PATH:-missing}" \
+    "Install it with:" \
+    "  sudo apt update" \
+    "  sudo apt install vlc"
+  exit 1
+fi
+
+export PYTHON_VLC_LIB_PATH="$LIBVLC_PATH"
+VLC_PLUGIN_DIR="$(find_vlc_plugin_dir || true)"
+if [ -n "$VLC_PLUGIN_DIR" ]; then
+  export VLC_PLUGIN_PATH="$VLC_PLUGIN_DIR"
+elif [ -n "${VLC_PLUGIN_PATH:-}" ] && [ ! -d "$VLC_PLUGIN_PATH" ]; then
+  unset VLC_PLUGIN_PATH
+fi
+
+BUILD_MODE="release"
+if [ -f "$BUILD_INFO" ]; then
+  detected_mode="$(sed -n 's/^Build mode: //p' "$BUILD_INFO" | head -n 1)"
+  if [ "$detected_mode" = "debug" ] || [ "$detected_mode" = "release" ]; then
+    BUILD_MODE="$detected_mode"
+  fi
+fi
+
+if [ "$BUILD_MODE" = "debug" ]; then
+  exec "$APP_EXECUTABLE" "$@"
+fi
+
+if [ "${1:-}" = "--smoke-test" ]; then
+  set +e
+  "$APP_EXECUTABLE" "$@" 2>&1 | tee -a "$LOG_FILE"
+  exit_code="${PIPESTATUS[0]}"
+  set -e
+  exit "$exit_code"
+fi
+
+{
+  echo
+  echo "===== $(date -u '+%Y-%m-%dT%H:%M:%SZ') Video Event Logger start ====="
+  exec "$APP_EXECUTABLE" "$@"
+} >> "$LOG_FILE" 2>&1

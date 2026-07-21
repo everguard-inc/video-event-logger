@@ -1,10 +1,12 @@
 import json
+import os
+import tempfile
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from video_event_logger.models.annotation import AnnotationDocument
-from video_event_logger.services.path_utils import annotation_paths_for_video_name, ensure_data_dirs
+from video_event_logger.services.path_utils import annotation_paths_for_video_name
 
 
 class CorruptedAnnotationError(Exception):
@@ -67,8 +69,28 @@ class AnnotationStore:
         return backup_path
 
     def _write_json(self, path: Path, data: Dict[str, object]) -> None:
-        ensure_data_dirs()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as file_obj:
-            json.dump(data, file_obj, indent=2, ensure_ascii=False)
-            file_obj.write("\n")
+        temporary_path = None  # type: Optional[Path]
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(path.parent),
+                prefix=".%s." % path.name,
+                suffix=".tmp",
+                delete=False,
+            ) as file_obj:
+                temporary_path = Path(file_obj.name)
+                json.dump(data, file_obj, indent=2, ensure_ascii=False)
+                file_obj.write("\n")
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+
+            os.replace(temporary_path, path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except FileNotFoundError:
+                    pass

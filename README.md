@@ -11,11 +11,15 @@ The application is built with PySide6 and uses VLC/libVLC through `python-vlc`. 
 - Step approximately one frame backward or forward using VLC's reported FPS, with a 30 FPS fallback.
 - Rotate the preview clockwise in 90-degree increments while playback is paused. Rotation changes only the preview and is not persisted.
 - Log interval start/end timestamps with buttons or keyboard shortcuts.
+- Show a persistent highlighted `INTERVAL ACTIVE` indicator with the exact Start timestamp until the interval is completed or cancelled.
+- Automatically use the exact video duration as End when an active interval reaches the end of the video.
 - Apply an `event_type` to new intervals and optionally confirm or change it in a popup that also accepts a comment.
 - Play, edit, delete, and jump to saved intervals; show per-event counts.
-- Autosave after interval creation, editing, or deletion and when the application closes.
+- Keep both the shareable result JSON and the recovery autosave current after interval creation, editing, or deletion; update current state again when the application closes.
+- Show separate `result JSON` and `autosave` status indicators, including partial-save failures.
 - Continue existing work, start over, delete a project, and optionally resume the last playback position.
 - Export final annotations without storing the full source-video path.
+- Save JSON atomically so a failed write keeps the previous file intact and does not follow a destination symlink/hardlink into the source video.
 
 ## Run from source
 
@@ -49,11 +53,12 @@ Windows playback support exists in the `VideoPlayer` adapter, but there is curre
 
 1. Select `Open Video` and choose an `.mp4` or `.mkv` file.
 2. Set the `event_type` for new intervals. An empty value becomes `undefined`; the UI limits the value to 25 characters.
-3. Press `A` or `Start` at the beginning of an event.
+3. Press `A` or `Start` at the beginning of an event. The Start button and End button are highlighted, and the active indicator shows the exact timestamp. Pressing Start again replaces that timestamp.
 4. Press `D` or `End` at the end of an event.
 5. If `Show popup after each interval` is enabled, confirm the event type and optional comment. Cancelling the popup discards the pending interval.
 6. Review intervals in the table. `Play` stops automatically at the interval end, `Edit` changes the event type/comment, and double-clicking a row jumps to its start.
-7. Select `Finish & Save JSON` to create the final annotation file.
+7. After every completed, edited, or deleted interval, the application immediately updates both JSON files. The file in `results/` is therefore ready to copy while the application remains open.
+8. Before delivery, optionally select `Validate & Save JSON Now` to validate the full document and explicitly rewrite both files. This is a verification/checkpoint action, not a prerequisite for current interval data to reach the result JSON.
 
 ### Keyboard shortcuts
 
@@ -82,6 +87,13 @@ Application data is stored under the current user's home directory:
 
 Builds from before the rename stored data under the legacy `~/VideoEventMarker` directory. The new application does not delete or move that directory. If existing work must be retained, copy its `autosave/` and `results/` contents into `~/VideoEventLogger/` before opening those projects in the renamed build.
 
+The two files have different roles:
+
+- `results/<video-stem>.annotations.json` is the shareable result. It is updated immediately after every completed, edited, or deleted interval, so it can be copied without closing the application or pressing an extra save button.
+- `autosave/<video-stem>.autosave.json` is the recovery copy used when continuing work. It is updated independently from the result file.
+
+Both writes use a temporary file in the destination directory, flush it to disk, and atomically replace the JSON destination. If one write fails, the other is still attempted; the two labelled status lamps show which file is current or failed. A failed write leaves that file's previous valid version intact and removes the temporary file.
+
 Projects are currently identified only by the video filename stem. Videos with the same stem in different directories, or files such as `sample.mp4` and `sample.mkv`, therefore share annotation paths. Avoid those collisions until project identity is made unique.
 
 The JSON document contains:
@@ -108,66 +120,76 @@ Run a Python syntax/import compilation check:
 python -m compileall -q video_event_logger tests packaging/macos/create_icns.py
 ```
 
-The current suite covers the core annotation and project services. Playback, Qt controller flows, persistence edge cases, and packaged binaries still require the manual release smoke test.
+The current 31-test suite covers annotation/project services, atomic persistence (including symlink/hardlink regression cases), live result/recovery checkpoints and partial failures, resumed-work synchronization, end-of-video interval completion, and UI feedback state. Real VLC video output and packaged binaries still require the manual release smoke test.
 
 Before distributing any build, complete [RELEASE_SMOKE_CHECKLIST.md](RELEASE_SMOKE_CHECKLIST.md). The code-quality review and prioritized follow-up work are recorded in [CODE_QUALITY_AUDIT.md](CODE_QUALITY_AUDIT.md).
 
 ## Package for Ubuntu 20.04
 
-PyInstaller does not cross-build a Linux application from macOS. Use the Docker flow or build natively on Ubuntu 20.04.
+PyInstaller does not cross-build a Linux application from macOS. The supported release flow always builds inside an `ubuntu:20.04` Docker image for `linux/amd64`; do not run PyInstaller directly on the host for an Ubuntu release.
 
-### Docker build from macOS
+### Docker release build
 
-Install Docker Desktop, then run:
+Install Docker with the Buildx plugin (Docker Desktop includes it), then run from the repository root:
 
 ```bash
-bash packaging/ubuntu_20_04/build_in_docker.sh
+bash packaging/ubuntu_20_04/build_release.sh
 ```
 
-The default build uses Ubuntu 20.04, Python 3.12, and `linux/amd64`. Python 3.12 is compiled from the official Python source archive inside the image. The first build can take several minutes, especially under CPU emulation on Apple Silicon.
+The build uses Ubuntu 20.04, Python 3.12.4, pinned Python dependencies, and `linux/amd64`. Python is compiled inside the image with a shared `libpython3.12`. The first build can take several minutes, especially under x86-64 emulation on Apple Silicon.
+
+For a diagnostic build that keeps a console and PyInstaller debug output:
+
+```bash
+BUILD_MODE=debug bash packaging/ubuntu_20_04/build_release.sh
+```
 
 The expected output is:
 
 ```text
-release/video-event-logger-v0.2.0-ubuntu20.04.tar.gz
+release/video-event-logger-v0.2.0-ubuntu20.04-amd64.tar.gz
 ```
 
-Do not trust an artifact based only on its filename. Before release, verify that its executable is an x86-64 Linux `ELF` binary and that the archive contains no macOS `.dylib` files. The exact commands are in the release smoke checklist.
-
-### Native Ubuntu build
-
-Install the system dependencies and make Python 3.12 available, then run:
-
-```bash
-PYTHON_BIN=python3.12 bash packaging/ubuntu_20_04/build.sh
-bash packaging/ubuntu_20_04/create_release_archive.sh
-```
-
-The unpackaged executable is located at:
-
-```text
-dist/video-event-logger/video-event-logger
-```
-
-To install that local build for the current user without creating an archive:
-
-```bash
-bash packaging/ubuntu_20_04/install_user_shortcut.sh
-```
+Before the archive is created, the container automatically checks the ELF architecture, every bundled ELF dependency with `ldd`, the maximum required GLIBC version (`2.31`), the Qt `xcb` platform plugin, libVLC availability, required resources, `BUILD_INFO`, and the packaged `--smoke-test`, including creation of a libVLC Instance and MediaPlayer. Public `BUILD_INFO` contains only application/build/runtime versions and the resolved Python dependency list; it does not expose Git metadata. Archive creation is aborted on any failure. Detailed build, validation, and troubleshooting instructions are in [packaging/ubuntu_20_04/README.md](packaging/ubuntu_20_04/README.md).
 
 ### Install the Ubuntu release
 
 On the target Ubuntu 20.04 machine:
 
 ```bash
-sudo apt update
-sudo apt install vlc libvlc5 vlc-plugin-base
-tar -xzf video-event-logger-v0.2.0-ubuntu20.04.tar.gz
-cd video-event-logger-v0.2.0-ubuntu20.04
+tar -xzf video-event-logger-v0.2.0-ubuntu20.04-amd64.tar.gz
+cd video-event-logger-v0.2.0-ubuntu20.04-amd64
 bash install.sh
 ```
 
-The per-user installer places the application under `~/.local/opt/video-event-logger` and creates an application-menu entry named `Video Event Logger`.
+When dependencies are missing, `install.sh` requests administrator access and executes:
+
+```bash
+sudo apt update
+sudo apt install vlc file libxcb-cursor0 libgtk-3-0
+```
+
+The application itself is installed without `sudo` under `~/.local/opt/video-event-logger`, and an application-menu entry named `Video Event Logger` is created. It is safe to run the installer again to update an existing installation. To verify an installed build without opening the full UI, run:
+
+```bash
+~/.local/opt/video-event-logger/video-event-logger-launcher --smoke-test
+```
+
+Release-mode launcher output is written to `~/.local/state/video-event-logger/application.log` (or the equivalent path below `$XDG_STATE_HOME`). The launcher does not modify global `LD_LIBRARY_PATH`; it only points `python-vlc` at the system libVLC installation.
+
+`install.sh` validates the actual system libVLC file and runs the packaged smoke test before installing. It does not require an exact `dpkg` package-name match, so compatible renamed packages do not cause a false `required Ubuntu packages are unavailable` error. Use the installed launcher or application-menu entry for normal startup, not the inner PyInstaller executable.
+
+The installer also checks the actual `ldd` result for Qt's `libqxcb.so`. If `libxcb-cursor.so.0` is missing despite package-manager state, it attempts `sudo apt install --reinstall libxcb-cursor0` and runs `sudo ldconfig` before validating again.
+
+The release bundles the specific `libffi.so.7` runtime required by Python 3.12's `_ctypes` extension. This prevents `python-vlc could not be imported` on newer Ubuntu systems that have only `libffi.so.8`; system VLC and glibc are still not bundled.
+
+To uninstall the application:
+
+```bash
+bash ~/.local/opt/video-event-logger/uninstall.sh
+```
+
+The uninstaller removes the application, desktop entry, and application log. Annotation JSON files in `~/VideoEventLogger` are intentionally preserved.
 
 ## Package for macOS
 

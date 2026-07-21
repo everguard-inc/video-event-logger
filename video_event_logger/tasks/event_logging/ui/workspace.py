@@ -63,8 +63,8 @@ class EventLoggingWorkspace(QWidget):
     def set_event_type_lamp(self, state: str) -> None:
         self.metadata_panel.set_event_type_lamp(state)
 
-    def set_save_status(self, status: str) -> None:
-        self.metadata_panel.set_save_status(status)
+    def set_persistence_status(self, result_status: str, autosave_status: str) -> None:
+        self.metadata_panel.set_persistence_status(result_status, autosave_status)
 
     def set_status_text(self, text: str) -> None:
         self.metadata_panel.set_status_text(text)
@@ -92,6 +92,9 @@ class EventLoggingWorkspace(QWidget):
 
     def set_rotation_enabled(self, enabled: bool) -> None:
         self.player_panel.set_rotation_enabled(enabled)
+
+    def set_pending_interval_start(self, start_seconds: Optional[float]) -> None:
+        self.player_panel.set_pending_interval_start(start_seconds)
 
     def begin_slider_drag(self) -> None:
         self.player_panel.begin_slider_drag()

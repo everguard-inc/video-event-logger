@@ -1,5 +1,6 @@
 import os
 import sys
+from ctypes.util import find_library
 from pathlib import Path
 from typing import List, Optional
 
@@ -7,63 +8,65 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 
+def _detect_linux_libvlc() -> Optional[str]:
+    configured_path = os.environ.get("PYTHON_VLC_LIB_PATH", "")
+    if configured_path and (not os.path.isabs(configured_path) or os.path.isfile(configured_path)):
+        return configured_path
+
+    for candidate in (
+        "/usr/lib/x86_64-linux-gnu/libvlc.so.5",
+        "/lib/x86_64-linux-gnu/libvlc.so.5",
+        "/usr/local/lib/libvlc.so.5",
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+
+    detected = find_library("vlc")
+    return detected or None
+
+
+def _detect_linux_vlc_plugins(libvlc_path: Optional[str]) -> Optional[str]:
+    configured_path = os.environ.get("VLC_PLUGIN_PATH", "")
+    if configured_path and os.path.isdir(configured_path):
+        return configured_path
+
+    candidates = []
+    if libvlc_path and os.path.isabs(libvlc_path):
+        candidates.append(str(Path(libvlc_path).parent / "vlc" / "plugins"))
+    candidates.extend(
+        (
+            "/usr/lib/x86_64-linux-gnu/vlc/plugins",
+            "/usr/lib/vlc/plugins",
+            "/usr/local/lib/vlc/plugins",
+        )
+    )
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
 def _configure_vlc_environment() -> None:
     if not sys.platform.startswith("linux"):
         return
 
-    lib_candidates = [
-        "/usr/lib/x86_64-linux-gnu/libvlc.so.5",
-        "/usr/lib/aarch64-linux-gnu/libvlc.so.5",
-        "/usr/lib/arm-linux-gnueabihf/libvlc.so.5",
-    ]
-    module_candidates = [
-        "/usr/lib/x86_64-linux-gnu/vlc/plugins",
-        "/usr/lib/aarch64-linux-gnu/vlc/plugins",
-        "/usr/lib/arm-linux-gnueabihf/vlc/plugins",
-    ]
-    lib_dir_candidates = [
-        "/usr/lib/x86_64-linux-gnu",
-        "/usr/lib/aarch64-linux-gnu",
-        "/usr/lib/arm-linux-gnueabihf",
-    ]
-
-    if "PYTHON_VLC_LIB_PATH" not in os.environ:
-        for path in lib_candidates:
-            if os.path.exists(path):
-                os.environ["PYTHON_VLC_LIB_PATH"] = path
-                break
-
-    if "PYTHON_VLC_MODULE_PATH" not in os.environ:
-        for path in module_candidates:
-            if os.path.isdir(path):
-                os.environ["PYTHON_VLC_MODULE_PATH"] = path
-                os.environ.setdefault("VLC_PLUGIN_PATH", path)
-                break
-
-    ld_paths = []
-    original_ld_path = os.environ.get("LD_LIBRARY_PATH_ORIG")
-    if original_ld_path:
-        ld_paths.extend(original_ld_path.split(":"))
-    for path in lib_dir_candidates:
-        if os.path.isdir(path):
-            ld_paths.append(path)
-    current_ld_path = os.environ.get("LD_LIBRARY_PATH")
-    if current_ld_path:
-        ld_paths.extend(current_ld_path.split(":"))
-
-    unique_ld_paths = []
-    for path in ld_paths:
-        if path and path not in unique_ld_paths:
-            unique_ld_paths.append(path)
-    if unique_ld_paths:
-        os.environ["LD_LIBRARY_PATH"] = ":".join(unique_ld_paths)
+    libvlc_path = _detect_linux_libvlc()
+    plugin_path = _detect_linux_vlc_plugins(libvlc_path)
+    if libvlc_path:
+        os.environ["PYTHON_VLC_LIB_PATH"] = libvlc_path
+    elif os.path.isabs(os.environ.get("PYTHON_VLC_LIB_PATH", "")):
+        os.environ.pop("PYTHON_VLC_LIB_PATH", None)
+    if plugin_path:
+        os.environ["VLC_PLUGIN_PATH"] = plugin_path
+    elif os.environ.get("VLC_PLUGIN_PATH"):
+        os.environ.pop("VLC_PLUGIN_PATH", None)
 
 
 _configure_vlc_environment()
 
 try:
     import vlc
-except ImportError as exc:
+except (ImportError, NotImplementedError, OSError, SystemExit) as exc:
     vlc = None
     VLC_IMPORT_ERROR = exc
 else:
@@ -137,13 +140,11 @@ class VideoPlayer(QWidget):
         self.media_player = None
         self.last_error = (
             "Could not initialize VLC. Attempts: %s. "
-            "PYTHON_VLC_LIB_PATH=%s PYTHON_VLC_MODULE_PATH=%s VLC_PLUGIN_PATH=%s LD_LIBRARY_PATH=%s"
+            "PYTHON_VLC_LIB_PATH=%s VLC_PLUGIN_PATH=%s"
         ) % (
             " | ".join(errors),
             os.environ.get("PYTHON_VLC_LIB_PATH", ""),
-            os.environ.get("PYTHON_VLC_MODULE_PATH", ""),
             os.environ.get("VLC_PLUGIN_PATH", ""),
-            os.environ.get("LD_LIBRARY_PATH", ""),
         )
         self.video_surface.setToolTip(self.last_error)
         return False
@@ -156,15 +157,7 @@ class VideoPlayer(QWidget):
     def _default_vlc_plugin_path(self) -> Optional[str]:
         if not sys.platform.startswith("linux"):
             return None
-        candidates = [
-            "/usr/lib/x86_64-linux-gnu/vlc/plugins",
-            "/usr/lib/aarch64-linux-gnu/vlc/plugins",
-            "/usr/lib/arm-linux-gnueabihf/vlc/plugins",
-        ]
-        for path in candidates:
-            if os.path.isdir(path):
-                return path
-        return None
+        return _detect_linux_vlc_plugins(os.environ.get("PYTHON_VLC_LIB_PATH"))
 
     def load_video(self, path: Path) -> bool:
         if not self.is_available():
