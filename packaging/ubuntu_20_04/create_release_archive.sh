@@ -56,12 +56,14 @@ mkdir -p "$WORK_DIR"
 cp -R "$BUILD_DIR" "$WORK_DIR/$APP_NAME"
 cp packaging/ubuntu_20_04/install.sh "$WORK_DIR/install.sh"
 cp packaging/ubuntu_20_04/uninstall.sh "$WORK_DIR/uninstall.sh"
+cp packaging/ubuntu_20_04/fix.sh "$WORK_DIR/fix.sh"
 cp packaging/ubuntu_20_04/video-event-logger-launcher "$WORK_DIR/video-event-logger-launcher"
 cp packaging/ubuntu_20_04/release_README.md "$WORK_DIR/README.md"
 cp "$BUILD_INFO_PATH" "$WORK_DIR/BUILD_INFO.txt"
 chmod +x \
   "$WORK_DIR/install.sh" \
   "$WORK_DIR/uninstall.sh" \
+  "$WORK_DIR/fix.sh" \
   "$WORK_DIR/video-event-logger-launcher"
 
 tar \

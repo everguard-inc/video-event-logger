@@ -17,21 +17,23 @@ class AnnotationDocument:
     schema_version: str = SCHEMA_VERSION
     app_name: str = APP_NAME
     app_version: str = APP_VERSION
-    is_autosave: bool = True
+    is_autosave: bool = False
     created_at: Optional[str] = None
 
     def refresh_interval_ids(self) -> None:
         for index, interval in enumerate(self.intervals, start=1):
             interval.interval_id = index
 
-    def to_dict(self, is_autosave: bool) -> Dict[str, Any]:
+    def to_dict(self, is_autosave: bool = False) -> Dict[str, Any]:
         self.refresh_interval_ids()
+        if self.created_at is None:
+            self.created_at = datetime.now(timezone.utc).astimezone().isoformat()
         return {
             "schema_version": self.schema_version,
             "app_name": self.app_name,
             "app_version": self.app_version,
             "is_autosave": is_autosave,
-            "created_at": self.created_at or datetime.now(timezone.utc).astimezone().isoformat(),
+            "created_at": self.created_at,
             "video_name": self.video_name,
             "current_event_type": self.current_event_type.strip() or DEFAULT_EVENT_TYPE,
             "last_playback_position_seconds": round(self.last_playback_position_seconds, 3),
@@ -58,7 +60,7 @@ class AnnotationDocument:
             schema_version=data.get("schema_version") or SCHEMA_VERSION,
             app_name=data.get("app_name") or APP_NAME,
             app_version=data.get("app_version") or APP_VERSION,
-            is_autosave=bool(data.get("is_autosave", True)),
+            is_autosave=bool(data.get("is_autosave", False)),
             created_at=data.get("created_at"),
         )
         document.refresh_interval_ids()

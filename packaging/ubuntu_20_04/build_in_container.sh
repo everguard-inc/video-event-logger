@@ -64,6 +64,10 @@ PYTHON_VERSION="$(python -c 'import platform; print(platform.python_version())')
 PYINSTALLER_VERSION="$(python -c 'import PyInstaller; print(PyInstaller.__version__)')"
 PYSIDE_VERSION="$(python -c 'import PySide6; print(PySide6.__version__)')"
 PYTHON_VLC_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("python-vlc"))')"
+OPENSSL_RUNTIME_VERSION="$(
+  LD_LIBRARY_PATH=/opt/video-event-logger-openssl/lib64 \
+    /opt/video-event-logger-openssl/bin/openssl version
+)"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(date +%s)}"
 if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
   echo "Invalid SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH" >&2
@@ -83,6 +87,7 @@ BUILD_DATE_UTC="${BUILD_DATE_UTC:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
   echo "PyInstaller version: $PYINSTALLER_VERSION"
   echo "PySide6 version: $PYSIDE_VERSION"
   echo "python-vlc version: $PYTHON_VLC_VERSION"
+  echo "Bundled OpenSSL version: $OPENSSL_RUNTIME_VERSION"
   echo
   echo "Resolved Python dependencies:"
   sed 's/^/  /' "$DEPENDENCY_INFO_PATH"

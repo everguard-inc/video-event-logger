@@ -17,9 +17,18 @@ class AnnotationServiceTest(unittest.TestCase):
         self.service.set_document(self.document)
 
     def test_start_interval_sets_pending_start(self) -> None:
+        started = self.service.start_interval(12.345)
+
+        self.assertTrue(started)
+        self.assertTrue(self.service.has_pending_interval())
+        self.assertEqual(self.service.pending_start_seconds, 12.345)
+
+    def test_start_interval_does_not_replace_pending_start(self) -> None:
         self.service.start_interval(12.345)
 
-        self.assertTrue(self.service.has_pending_interval())
+        started = self.service.start_interval(50.0)
+
+        self.assertFalse(started)
         self.assertEqual(self.service.pending_start_seconds, 12.345)
 
     def test_end_interval_requires_start(self) -> None:

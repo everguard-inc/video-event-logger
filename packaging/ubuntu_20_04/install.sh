@@ -16,6 +16,7 @@ fi
 APP_DIR="${APP_DIR:-$SCRIPT_DIR/$APP_NAME}"
 LAUNCHER_SOURCE="${LAUNCHER_SOURCE:-$SCRIPT_DIR/video-event-logger-launcher}"
 UNINSTALL_SOURCE="${UNINSTALL_SOURCE:-$SCRIPT_DIR/uninstall.sh}"
+FIX_SOURCE="${FIX_SOURCE:-$SCRIPT_DIR/fix.sh}"
 BUILD_INFO_SOURCE="${BUILD_INFO_SOURCE:-$SCRIPT_DIR/BUILD_INFO.txt}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/opt/video-event-logger}"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
@@ -113,6 +114,8 @@ runtime_dependencies_ready() {
   command -v vlc >/dev/null 2>&1 \
     && command -v file >/dev/null 2>&1 \
     && [ -n "$LIBVLC_PATH" ] \
+    && [ -n "$VLC_PLUGIN_DIR" ] \
+    && [ -f "$VLC_PLUGIN_DIR/video_output/libxcb_x11_plugin.so" ] \
     && qt_runtime_dependencies_ready
 }
 
@@ -129,7 +132,7 @@ install_runtime_dependencies() {
     && apt-cache show libgtk-3-0t64 >/dev/null 2>&1; then
     gtk_package="libgtk-3-0t64"
   fi
-  local packages=(vlc file libxcb-cursor0 "$gtk_package")
+  local packages=(vlc vlc-plugin-base file libxcb-cursor0 "$gtk_package")
   echo "Installing required Ubuntu packages: ${packages[*]}"
 
   if [ "$(id -u)" -eq 0 ]; then
@@ -176,6 +179,9 @@ if [ ! -f "$LAUNCHER_SOURCE" ]; then
 fi
 if [ ! -f "$UNINSTALL_SOURCE" ]; then
   fail "uninstaller is missing: $UNINSTALL_SOURCE"
+fi
+if [ ! -f "$FIX_SOURCE" ]; then
+  fail "optional video fix is missing: $FIX_SOURCE"
 fi
 if [ ! -f "$BUILD_INFO_SOURCE" ]; then
   fail "build metadata is missing: $BUILD_INFO_SOURCE"
@@ -254,11 +260,13 @@ trap cleanup EXIT
 cp -R "$APP_DIR/." "$STAGING_DIR/"
 cp "$LAUNCHER_SOURCE" "$STAGING_DIR/video-event-logger-launcher"
 cp "$UNINSTALL_SOURCE" "$STAGING_DIR/uninstall.sh"
+cp "$FIX_SOURCE" "$STAGING_DIR/fix.sh"
 cp "$BUILD_INFO_SOURCE" "$STAGING_DIR/BUILD_INFO.txt"
 chmod +x \
   "$STAGING_DIR/$APP_NAME" \
   "$STAGING_DIR/video-event-logger-launcher" \
-  "$STAGING_DIR/uninstall.sh"
+  "$STAGING_DIR/uninstall.sh" \
+  "$STAGING_DIR/fix.sh"
 
 if [ ! -f "$STAGING_DIR/$ICON_RELATIVE_PATH" ]; then
   fail "application icon is missing from the package"
@@ -315,3 +323,6 @@ echo "  $LAUNCHER_FILE"
 echo
 echo "Uninstall:"
 echo "  bash $INSTALL_DIR/uninstall.sh"
+echo
+echo "Optional Ubuntu 20.04 Intel video diagnostics/fix:"
+echo "  bash $INSTALL_DIR/fix.sh diagnose"

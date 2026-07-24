@@ -4,8 +4,10 @@ from ctypes.util import find_library
 from pathlib import Path
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
+
+from video_event_logger.ui.fullscreen_hud import FullscreenHud
 
 
 def _detect_linux_libvlc() -> Optional[str]:
@@ -62,6 +64,37 @@ def _configure_vlc_environment() -> None:
         os.environ.pop("VLC_PLUGIN_PATH", None)
 
 
+def _vlc_initialization_attempts(
+    platform_name: Optional[str] = None,
+) -> List[List[str]]:
+    platform_name = platform_name or sys.platform
+    if platform_name.startswith("linux"):
+        # VLC 3.0.9.2 on Ubuntu 20.04 can render VA-API frames with shifted
+        # chroma planes (a green band at the top). The VA-API DRM path avoids
+        # the affected decoder/output interop, while plain X11 remains
+        # embeddable through libVLC on both Xorg and Ubuntu 24.04's XWayland.
+        # Qt owns the application's HUD, so VLC subpictures/OSD are unnecessary
+        # and would otherwise trigger repeated YUVA -> VAOP blending errors.
+        stable_linux_args = [
+            "--ignore-config",
+            "--avcodec-hw=vaapi_drm",
+            "--vout=xcb_x11",
+            "--no-osd",
+            "--no-spu",
+            "--no-video-title-show",
+        ]
+        return [
+            stable_linux_args,
+            ["--avcodec-hw=none", "--vout=xcb_x11", "--no-video-title-show"],
+            ["--no-video-title-show"],
+        ]
+    return [
+        ["--avcodec-hw=none", "--no-video-title-show"],
+        ["--no-video-title-show"],
+        [],
+    ]
+
+
 _configure_vlc_environment()
 
 try:
@@ -74,6 +107,10 @@ else:
 
 
 class VideoPlayer(QWidget):
+    fullscreen_toggle_requested = Signal()
+    fullscreen_seek_previewed = Signal(float)
+    fullscreen_seek_requested = Signal(float)
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.instance = None
@@ -88,6 +125,11 @@ class VideoPlayer(QWidget):
         self.video_surface.setMinimumHeight(120)
         self.video_surface.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.video_surface.setStyleSheet("background: #111;")
+        self.video_surface.setMouseTracking(True)
+        self.video_surface.installEventFilter(self)
+        self.fullscreen_hud = FullscreenHud(self.video_surface)
+        self.fullscreen_hud.seek_previewed.connect(self.fullscreen_seek_previewed.emit)
+        self.fullscreen_hud.seek_requested.connect(self.fullscreen_seek_requested.emit)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -102,19 +144,57 @@ class VideoPlayer(QWidget):
 
         self._initialize_vlc()
 
+    def set_fullscreen_hud_active(self, active: bool) -> None:
+        self.fullscreen_hud.set_active(active)
+
+    def update_fullscreen_hud_timeline(
+        self,
+        current_seconds: float,
+        duration_seconds: Optional[float],
+    ) -> None:
+        self.fullscreen_hud.update_timeline(current_seconds, duration_seconds)
+
+    def set_fullscreen_hud_playback_active(self, active: bool) -> None:
+        self.fullscreen_hud.set_playback_active(active)
+
+    def set_fullscreen_hud_speed(self, speed: float) -> None:
+        self.fullscreen_hud.set_speed(speed)
+
+    def set_fullscreen_hud_interval_start(self, start_seconds: Optional[float]) -> None:
+        self.fullscreen_hud.set_pending_interval_start(start_seconds)
+
+    def set_fullscreen_hud_interval_state(
+        self,
+        start_seconds: Optional[float],
+        persistent: bool,
+    ) -> None:
+        self.fullscreen_hud.set_pending_interval_start(start_seconds, persistent)
+
+    def notify_fullscreen_user_activity(self) -> None:
+        self.fullscreen_hud.notify_user_activity()
+
+    def show_fullscreen_notification(
+        self,
+        text: str,
+        level: str = "info",
+        persistent: bool = False,
+    ) -> None:
+        self.fullscreen_hud.show_notification(text, level, persistent)
+
+    def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        if (
+            watched is self.video_surface
+            and event.type() == QEvent.Type.MouseButtonDblClick
+        ):
+            self.fullscreen_toggle_requested.emit()
+            return True
+        return super().eventFilter(watched, event)
+
     def is_available(self) -> bool:
         return self.media_player is not None and self.instance is not None
 
     def _initialize_vlc(self) -> bool:
-        attempts = [
-            ["--avcodec-hw=none", "--no-video-title-show"],
-            ["--no-video-title-show"],
-            [],
-        ]  # type: List[List[str]]
-
-        plugin_path = self._default_vlc_plugin_path()
-        if plugin_path:
-            attempts.insert(0, ["--plugin-path=%s" % plugin_path, "--avcodec-hw=none", "--no-video-title-show"])
+        attempts = _vlc_initialization_attempts()
 
         rotation_args = self._rotation_vlc_args()
         errors = []
@@ -153,11 +233,6 @@ class VideoPlayer(QWidget):
         if self.rotation_degrees == 0:
             return []
         return ["--video-filter=transform", "--transform-type=%d" % self.rotation_degrees]
-
-    def _default_vlc_plugin_path(self) -> Optional[str]:
-        if not sys.platform.startswith("linux"):
-            return None
-        return _detect_linux_vlc_plugins(os.environ.get("PYTHON_VLC_LIB_PATH"))
 
     def load_video(self, path: Path) -> bool:
         if not self.is_available():
@@ -342,3 +417,8 @@ class VideoPlayer(QWidget):
             self.media_player.set_nsobject(window_id)
         elif sys.platform.startswith("win"):
             self.media_player.set_hwnd(window_id)
+        try:
+            self.media_player.video_set_mouse_input(False)
+            self.media_player.video_set_key_input(False)
+        except (AttributeError, TypeError):
+            pass

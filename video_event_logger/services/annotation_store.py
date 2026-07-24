@@ -3,10 +3,14 @@ import os
 import tempfile
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from video_event_logger.models.annotation import AnnotationDocument
-from video_event_logger.services.path_utils import annotation_paths_for_video_name
+from video_event_logger.services.path_utils import (
+    annotation_backup_path_for_video_name,
+    annotation_path_for_video_name,
+    legacy_autosave_path_for_video_name,
+)
 
 
 class CorruptedAnnotationError(Exception):
@@ -17,16 +21,26 @@ class CorruptedAnnotationError(Exception):
 
 
 class AnnotationStore:
-    def paths_for_video_name(self, video_name: str) -> Tuple[Path, Path]:
-        return annotation_paths_for_video_name(video_name)
+    def annotation_path_for_video_name(self, video_name: str) -> Path:
+        return annotation_path_for_video_name(video_name)
+
+    def backup_path_for_video_name(self, video_name: str) -> Path:
+        return annotation_backup_path_for_video_name(video_name)
+
+    def legacy_autosave_path_for_video_name(self, video_name: str) -> Path:
+        return legacy_autosave_path_for_video_name(video_name)
 
     def existing_paths(self, video_name: str) -> Dict[str, Path]:
-        autosave_path, final_path = self.paths_for_video_name(video_name)
+        annotation_path = self.annotation_path_for_video_name(video_name)
+        backup_path = self.backup_path_for_video_name(video_name)
+        legacy_autosave_path = self.legacy_autosave_path_for_video_name(video_name)
         paths = {}
-        if autosave_path.exists():
-            paths["autosave"] = autosave_path
-        if final_path.exists():
-            paths["final"] = final_path
+        if annotation_path.exists():
+            paths["annotation"] = annotation_path
+        if backup_path.exists():
+            paths["backup"] = backup_path
+        if legacy_autosave_path.exists():
+            paths["legacy_autosave"] = legacy_autosave_path
         return paths
 
     def load(self, path: Path) -> AnnotationDocument:
@@ -41,23 +55,45 @@ class AnnotationStore:
             raise CorruptedAnnotationError(path, backup_path)
         return AnnotationDocument.from_dict(data)
 
-    def save_autosave(self, document: AnnotationDocument) -> Path:
-        autosave_path, _ = self.paths_for_video_name(document.video_name)
-        self._write_json(autosave_path, document.to_dict(is_autosave=True))
-        return autosave_path
-
-    def save_final(self, document: AnnotationDocument) -> Path:
-        _, final_path = self.paths_for_video_name(document.video_name)
-        self._write_json(final_path, document.to_dict(is_autosave=False))
-        return final_path
+    def save(self, document: AnnotationDocument) -> Path:
+        annotation_path = self.annotation_path_for_video_name(document.video_name)
+        self._backup_existing_annotation(annotation_path)
+        self._write_json(annotation_path, document.to_dict())
+        legacy_autosave_path = self.legacy_autosave_path_for_video_name(
+            document.video_name
+        )
+        if legacy_autosave_path.exists():
+            try:
+                legacy_autosave_path.unlink()
+            except OSError:
+                pass
+        return annotation_path
 
     def delete_project(self, video_name: str) -> List[Path]:
         deleted = []
-        for path in self.paths_for_video_name(video_name):
+        paths = (
+            self.annotation_path_for_video_name(video_name),
+            self.backup_path_for_video_name(video_name),
+            self.legacy_autosave_path_for_video_name(video_name),
+        )
+        for path in paths:
             if path.exists():
                 path.unlink()
                 deleted.append(path)
         return deleted
+
+    def _backup_existing_annotation(self, annotation_path: Path) -> None:
+        if not annotation_path.exists():
+            return
+        try:
+            with annotation_path.open("r", encoding="utf-8") as file_obj:
+                previous_data = json.load(file_obj)
+        except (JSONDecodeError, OSError, UnicodeDecodeError):
+            return
+        if not isinstance(previous_data, dict):
+            return
+        backup_path = annotation_path.with_name("%s.bak" % annotation_path.name)
+        self._write_json(backup_path, previous_data)
 
     def backup_corrupted_file(self, path: Path) -> Path:
         backup_path = path.with_name("%s_corrupted%s" % (path.stem, path.suffix))

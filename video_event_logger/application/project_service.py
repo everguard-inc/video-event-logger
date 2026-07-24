@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional
 
 from video_event_logger.models.annotation import AnnotationDocument
 from video_event_logger.services.annotation_store import AnnotationStore
@@ -16,15 +16,33 @@ class ProjectService:
     def existing_paths(self, video_name: str) -> Dict[str, Path]:
         return self.store.existing_paths(video_name)
 
-    def paths_for_video_name(self, video_name: str) -> Tuple[Path, Path]:
-        return self.store.paths_for_video_name(video_name)
+    def annotation_path_for_video_name(self, video_name: str) -> Path:
+        return self.store.annotation_path_for_video_name(video_name)
+
+    def backup_path_for_video_name(self, video_name: str) -> Path:
+        return self.store.backup_path_for_video_name(video_name)
 
     def choose_existing_source(self, paths: Dict[str, Path]) -> Optional[Path]:
-        if "autosave" in paths:
-            return paths["autosave"]
-        if "final" in paths:
-            return paths["final"]
-        return None
+        sources = self.existing_sources(paths)
+        return sources[0] if sources else None
+
+    def existing_sources(self, paths: Dict[str, Path]) -> List[Path]:
+        current_sources = [
+            paths[key]
+            for key in ("legacy_autosave", "annotation")
+            if key in paths
+        ]
+        current_sources.sort(key=self._modified_time, reverse=True)
+        if "backup" in paths:
+            current_sources.append(paths["backup"])
+        return current_sources
+
+    @staticmethod
+    def _modified_time(path: Path) -> int:
+        try:
+            return path.stat().st_mtime_ns
+        except (AttributeError, OSError):
+            return -1
 
     def load_document(self, path: Path, fallback_video_name: str) -> AnnotationDocument:
         document = self.store.load(path)
@@ -56,8 +74,5 @@ class ProjectService:
         document.video_metadata.duration_seconds = duration_seconds
         document.video_metadata.duration_hhmmss = seconds_to_hhmmss(duration_seconds)
 
-    def save_autosave(self, document: AnnotationDocument) -> Path:
-        return self.store.save_autosave(document)
-
-    def save_final(self, document: AnnotationDocument) -> Path:
-        return self.store.save_final(document)
+    def save(self, document: AnnotationDocument) -> Path:
+        return self.store.save(document)

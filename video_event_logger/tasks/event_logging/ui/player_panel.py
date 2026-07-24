@@ -2,6 +2,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -33,36 +34,20 @@ class PlayerPanel(QWidget):
         self.timeline_current_label.setMinimumWidth(92)
         self.timeline_duration_label = QLabel("00:00:00.000")
         self.timeline_duration_label.setMinimumWidth(92)
-        self.timeline_speed_label = QLabel("x1")
-        self.timeline_speed_label.setMinimumWidth(26)
-        self.timeline_rotation_label = QLabel("0deg")
-        self.timeline_rotation_label.setMinimumWidth(34)
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
         self.timeline_slider.setRange(0, 0)
         self.timeline_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         timeline_layout.addWidget(self.timeline_current_label)
         timeline_layout.addWidget(self.timeline_slider, 1)
         timeline_layout.addWidget(self.timeline_duration_label)
-        timeline_layout.addWidget(self.timeline_speed_label)
-        layout.addLayout(timeline_layout)
-
-        rotation_layout = QHBoxLayout()
-        rotation_layout.setContentsMargins(0, 0, 0, 0)
-        rotation_layout.setSpacing(4)
-        self.rotate_button = QPushButton("Rotate 90")
-        self.rotate_button.setMaximumHeight(26)
-        self.rotate_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.interval_state_label = QLabel("Interval: ready")
+        self.interval_state_label.setObjectName("intervalStateLabel")
         self.interval_state_label.setMinimumWidth(250)
         self.interval_state_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        rotation_layout.addWidget(QLabel("Rotation"))
-        rotation_layout.addWidget(self.timeline_rotation_label)
-        rotation_layout.addWidget(self.rotate_button)
-        rotation_layout.addStretch(1)
-        rotation_layout.addWidget(self.interval_state_label)
-        layout.addLayout(rotation_layout)
+        timeline_layout.addWidget(self.interval_state_label)
+        layout.addLayout(timeline_layout)
 
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 0, 0, 0)
@@ -99,7 +84,28 @@ class PlayerPanel(QWidget):
             button.setMaximumHeight(26)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             controls.addWidget(button)
+        self.play_pause_button.setCheckable(True)
+        self.speed_button_group = QButtonGroup(self)
+        self.speed_button_group.setExclusive(True)
+        self.speed_buttons = {
+            1.0: self.speed_1_button,
+            2.0: self.speed_2_button,
+            4.0: self.speed_4_button,
+            8.0: self.speed_8_button,
+        }
+        for speed_button in self.speed_buttons.values():
+            speed_button.setCheckable(True)
+            self.speed_button_group.addButton(speed_button)
+        self.set_active_speed(1.0)
+        self.set_playback_active(False)
         layout.addLayout(controls)
+        self.video_chrome_widgets = [
+            self.timeline_current_label,
+            self.timeline_slider,
+            self.timeline_duration_label,
+            self.interval_state_label,
+            *self.control_buttons,
+        ]
         self.set_pending_interval_start(None)
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -109,49 +115,68 @@ class PlayerPanel(QWidget):
         for button in self.control_buttons:
             button.setEnabled(loaded)
         self.timeline_slider.setEnabled(loaded)
-        self.rotate_button.setEnabled(loaded)
 
-    def set_rotation_enabled(self, enabled: bool) -> None:
-        self.rotate_button.setEnabled(enabled)
+    def set_video_only_mode(self, enabled: bool) -> None:
+        for widget in self.video_chrome_widgets:
+            widget.setVisible(not enabled)
+        if hasattr(self.video_player, "set_fullscreen_hud_active"):
+            self.video_player.set_fullscreen_hud_active(enabled)
 
-    def set_speed_label(self, speed: float) -> None:
-        self.timeline_speed_label.setText("x%s" % int(speed))
+    def set_active_speed(self, speed: float) -> None:
+        for button_speed, button in self.speed_buttons.items():
+            button.setChecked(button_speed == speed)
+        if hasattr(self.video_player, "set_fullscreen_hud_speed"):
+            self.video_player.set_fullscreen_hud_speed(speed)
 
-    def set_rotation_label(self, degrees: int) -> None:
-        self.timeline_rotation_label.setText("%ddeg" % degrees)
+    def set_playback_active(self, active: bool) -> None:
+        self.play_pause_button.setChecked(active)
+        self.play_pause_button.setToolTip("Pause playback" if active else "Start playback")
+        if hasattr(self.video_player, "set_fullscreen_hud_playback_active"):
+            self.video_player.set_fullscreen_hud_playback_active(active)
 
-    def set_pending_interval_start(self, start_seconds: Optional[float]) -> None:
+    def set_pending_interval_start(
+        self,
+        start_seconds: Optional[float],
+        persistent_in_fullscreen: bool = True,
+    ) -> None:
+        if hasattr(self.video_player, "set_fullscreen_hud_interval_state"):
+            self.video_player.set_fullscreen_hud_interval_state(
+                start_seconds,
+                persistent_in_fullscreen,
+            )
+        elif hasattr(self.video_player, "set_fullscreen_hud_interval_start"):
+            self.video_player.set_fullscreen_hud_interval_start(start_seconds)
         if start_seconds is None:
             self.interval_state_label.setText("Interval: ready")
-            self.interval_state_label.setStyleSheet("color: #666;")
+            self._set_feedback_state(self.interval_state_label, "ready")
             self.interval_state_label.setToolTip("Press Start or A to begin an interval.")
             self.set_start_button.setText("Start")
-            self.set_start_button.setStyleSheet("")
+            self._set_feedback_state(self.set_start_button, "idle")
             self.set_start_button.setToolTip("Set interval start")
-            self.set_end_button.setStyleSheet("")
+            self._set_feedback_state(self.set_end_button, "idle")
             self.set_end_button.setToolTip("Set interval end")
             return
 
         formatted_start = seconds_to_hhmmss(start_seconds)
         self.interval_state_label.setText("INTERVAL ACTIVE — start %s" % formatted_start)
-        self.interval_state_label.setStyleSheet(
-            "color: #8a5a00; background: #fff3cd; border: 1px solid #d6a800; "
-            "border-radius: 3px; padding: 2px 6px; font-weight: 600;"
-        )
+        self._set_feedback_state(self.interval_state_label, "active")
         self.interval_state_label.setToolTip(
             "Interval start is set to %s. Press End or D to finish." % formatted_start
         )
         self.set_start_button.setText("Start set")
-        self.set_start_button.setStyleSheet(
-            "QPushButton { background: #fff3cd; color: #5f4300; "
-            "border: 1px solid #d6a800; font-weight: 600; }"
+        self._set_feedback_state(self.set_start_button, "start-set")
+        self.set_start_button.setToolTip(
+            "Interval start is already set. Finish with End/D or cancel with Q."
         )
-        self.set_start_button.setToolTip("Replace the current interval start")
-        self.set_end_button.setStyleSheet(
-            "QPushButton { background: #e4f4e9; color: #145c2e; "
-            "border: 1px solid #62a978; font-weight: 600; }"
-        )
+        self._set_feedback_state(self.set_end_button, "finish-ready")
         self.set_end_button.setToolTip("Finish the active interval")
+
+    @staticmethod
+    def _set_feedback_state(widget: QWidget, state: str) -> None:
+        widget.setProperty("feedbackState", state)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+        widget.update()
 
     def begin_slider_drag(self) -> None:
         self.is_slider_dragging = True
@@ -164,6 +189,11 @@ class PlayerPanel(QWidget):
         self.timeline_current_label.setText(seconds_to_hhmmss(value / 1000.0))
 
     def update_timeline(self, current_seconds: float, duration_seconds: Optional[float]) -> None:
+        if hasattr(self.video_player, "update_fullscreen_hud_timeline"):
+            self.video_player.update_fullscreen_hud_timeline(
+                current_seconds,
+                duration_seconds,
+            )
         if duration_seconds is None:
             self.timeline_slider.setRange(0, 0)
             self.timeline_current_label.setText(seconds_to_hhmmss(current_seconds))
@@ -176,3 +206,16 @@ class PlayerPanel(QWidget):
         if not self.is_slider_dragging:
             self.timeline_slider.setValue(int(current_seconds * 1000))
             self.timeline_current_label.setText(seconds_to_hhmmss(current_seconds))
+
+    def show_fullscreen_notification(
+        self,
+        text: str,
+        level: str = "info",
+        persistent: bool = False,
+    ) -> None:
+        if hasattr(self.video_player, "show_fullscreen_notification"):
+            self.video_player.show_fullscreen_notification(text, level, persistent)
+
+    def notify_fullscreen_user_activity(self) -> None:
+        if hasattr(self.video_player, "notify_fullscreen_user_activity"):
+            self.video_player.notify_fullscreen_user_activity()

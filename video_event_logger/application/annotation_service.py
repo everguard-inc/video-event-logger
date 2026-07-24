@@ -31,9 +31,12 @@ class AnnotationService:
     def has_pending_interval(self) -> bool:
         return self._pending_start_seconds is not None
 
-    def start_interval(self, start_seconds: float) -> None:
+    def start_interval(self, start_seconds: float) -> bool:
         self._require_document()
+        if self._pending_start_seconds is not None:
+            return False
         self._pending_start_seconds = start_seconds
+        return True
 
     def end_interval(self, end_seconds: float, event_type: str, comment: str) -> Interval:
         document = self._require_document()

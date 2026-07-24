@@ -8,6 +8,7 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/video-event-logger"
 LOG_FILE="$STATE_DIR/application.log"
 LIBVLC_PATH=""
 VLC_PLUGIN_DIR=""
+VAAPI_RUNTIME_MARKER="${XDG_CONFIG_HOME:-$HOME/.config}/video-event-logger/vaapi-runtime"
 
 mkdir -p "$STATE_DIR"
 
@@ -57,6 +58,38 @@ find_vlc_plugin_dir() {
   return 1
 }
 
+configure_optional_vaapi_runtime() {
+  local runtime_root=""
+  if [ ! -f "$VAAPI_RUNTIME_MARKER" ]; then
+    return 0
+  fi
+  IFS= read -r runtime_root < "$VAAPI_RUNTIME_MARKER" || true
+  case "$runtime_root" in
+    "$HOME"/.local/opt/video-event-logger-vaapi/*) ;;
+    *)
+      report_error \
+        "Ignoring unsafe Video Event Logger VA-API runtime marker:" \
+        "  ${runtime_root:-empty}"
+      return 0
+      ;;
+  esac
+  if [ ! -f "$runtime_root/lib/libva.so.2" ] \
+    || [ ! -f "$runtime_root/lib/libva-drm.so.2" ] \
+    || [ ! -f "$runtime_root/lib/libva-x11.so.2" ] \
+    || [ ! -f "$runtime_root/lib/libigdgmm.so.12" ] \
+    || [ ! -f "$runtime_root/lib/dri/iHD_drv_video.so" ]; then
+    report_error \
+      "Ignoring incomplete Video Event Logger VA-API runtime:" \
+      "  $runtime_root" \
+      "Run the bundled fix.sh uninstall, then install it again."
+    return 0
+  fi
+  export LD_LIBRARY_PATH="$runtime_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export LIBVA_DRIVERS_PATH="$runtime_root/lib/dri"
+  export LIBVA_DRIVER_NAME=iHD
+  echo "Using app-specific Intel VA-API runtime: $runtime_root" >> "$LOG_FILE"
+}
+
 if [ ! -x "$APP_EXECUTABLE" ]; then
   report_error "Video Event Logger executable is missing or not executable:" "  $APP_EXECUTABLE"
   exit 1
@@ -66,6 +99,8 @@ if [ "$(uname -m)" != "x86_64" ]; then
   report_error "Video Event Logger requires Ubuntu 20.04 x86_64." "Detected architecture: $(uname -m)"
   exit 1
 fi
+
+configure_optional_vaapi_runtime
 
 LIBVLC_PATH="$(find_libvlc_path || true)"
 if ! command -v vlc >/dev/null 2>&1 || [ -z "$LIBVLC_PATH" ]; then
@@ -93,6 +128,16 @@ if [ -f "$BUILD_INFO" ]; then
   if [ "$detected_mode" = "debug" ] || [ "$detected_mode" = "release" ]; then
     BUILD_MODE="$detected_mode"
   fi
+fi
+
+# libVLC 3 embeds Linux video through an X11 window id. Running Qt through
+# XWayland keeps that contract valid on Wayland-based Ubuntu 24.04 sessions;
+# otherwise VLC creates a separate, unmanaged video window. The headless smoke
+# test uses Qt's offscreen platform.
+if [ "${1:-}" = "--smoke-test" ]; then
+  export QT_QPA_PLATFORM=offscreen
+else
+  export QT_QPA_PLATFORM=xcb
 fi
 
 if [ "$BUILD_MODE" = "debug" ]; then

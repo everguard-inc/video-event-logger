@@ -91,24 +91,15 @@ class IntervalsPanel(QWidget):
             action_layout.setSpacing(2)
             play_button = QPushButton("Play")
             play_button.setFixedWidth(42)
-            play_button.setStyleSheet(
-                "QPushButton { background: #eaf4ee; color: #163b25; border: 1px solid #9bb9a7; }"
-                "QPushButton:pressed { background: #d8e8df; }"
-            )
+            play_button.setProperty("actionRole", "play")
             play_button.clicked.connect(lambda checked=False, row_index=row: self.play_requested.emit(row_index))
             edit_button = QPushButton("Edit")
             edit_button.setFixedWidth(42)
-            edit_button.setStyleSheet(
-                "QPushButton { background: #f3eee3; color: #4a3520; border: 1px solid #b9aa92; }"
-                "QPushButton:pressed { background: #e8dfd0; }"
-            )
+            edit_button.setProperty("actionRole", "edit")
             edit_button.clicked.connect(lambda checked=False, row_index=row: self.edit_requested.emit(row_index))
             delete_button = QPushButton("Del")
             delete_button.setFixedWidth(42)
-            delete_button.setStyleSheet(
-                "QPushButton { background: #f5eded; color: #5a1d1d; border: 1px solid #c8a4a4; }"
-                "QPushButton:pressed { background: #eadada; }"
-            )
+            delete_button.setProperty("actionRole", "delete")
             delete_button.clicked.connect(lambda checked=False, row_index=row: self.delete_requested.emit(row_index))
             action_layout.addWidget(play_button)
             action_layout.addWidget(edit_button)

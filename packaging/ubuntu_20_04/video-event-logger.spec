@@ -7,6 +7,8 @@ from pathlib import Path
 project_root = Path(SPECPATH).resolve().parents[1]
 entrypoint = project_root / "video_event_logger" / "main.py"
 app_icon = project_root / "video_event_logger" / "assets" / "app_icon.svg"
+openssl_prefix = Path("/opt/video-event-logger-openssl")
+openssl_lib_dir = openssl_prefix / "lib64"
 build_mode = os.environ.get("BUILD_MODE", "release").strip().lower()
 if build_mode not in {"debug", "release"}:
     raise ValueError("BUILD_MODE must be 'debug' or 'release', got: %s" % build_mode)
@@ -35,20 +37,26 @@ def is_system_vlc_runtime(entry):
 a = Analysis(
     [str(entrypoint)],
     pathex=[str(project_root)],
-    binaries=[],
-    datas=[(str(app_icon), "video_event_logger/assets")],
+    binaries=[
+        (str(openssl_lib_dir / "libcrypto.so.3"), "."),
+        (str(openssl_lib_dir / "libssl.so.3"), "."),
+    ],
+    datas=[
+        (str(app_icon), "video_event_logger/assets"),
+        (str(openssl_prefix / "LICENSE.txt"), "licenses/openssl"),
+    ],
     hiddenimports=["vlc"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["PySide6.QtNetwork"],
+    excludes=[],
     noarchive=False,
     optimize=0,
 )
 # Python's bundled _ctypes extension is linked against Ubuntu 20.04's
-# libffi.so.7. Keep that one narrow runtime dependency so the package also
-# starts on newer Ubuntu systems that provide only libffi.so.8. glibc and
-# system VLC remain excluded.
+# libffi.so.7. Qt 6.7 needs OpenSSL 3 for HTTPS, while Ubuntu 20.04 provides
+# OpenSSL 1.1, so the explicitly listed OpenSSL 3 runtime is also retained.
+# glibc and system VLC remain excluded.
 a.exclude_system_libraries(list_of_exceptions=["libffi.so.*"])
 a.binaries = [entry for entry in a.binaries if not is_system_vlc_runtime(entry)]
 a.datas = [entry for entry in a.datas if not is_system_vlc_runtime(entry)]

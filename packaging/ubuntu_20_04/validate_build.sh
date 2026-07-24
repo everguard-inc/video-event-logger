@@ -5,6 +5,7 @@ cd "$(dirname "$0")/../.."
 
 DIST_DIR="${DIST_DIR:-dist/video-event-logger}"
 APP_EXECUTABLE="$DIST_DIR/video-event-logger"
+DIST_RUNTIME_DIR="$DIST_DIR/_internal"
 BUILD_INFO_PATH="${BUILD_INFO_PATH:-build/BUILD_INFO.txt}"
 MAX_GLIBC_VERSION="2.31"
 
@@ -20,7 +21,13 @@ done
 [ "$(uname -m)" = "x86_64" ] || fail "builder architecture is $(uname -m), expected x86_64"
 [ "$(dpkg --print-architecture)" = "amd64" ] || fail "dpkg architecture is not amd64"
 [ -x "$APP_EXECUTABLE" ] || fail "main executable is missing: $APP_EXECUTABLE"
+[ -d "$DIST_RUNTIME_DIR" ] || fail "PyInstaller runtime directory is missing: $DIST_RUNTIME_DIR"
 [ -f "$BUILD_INFO_PATH" ] || fail "BUILD_INFO.txt is missing: $BUILD_INFO_PATH"
+
+# PyInstaller adds _internal to the dynamic-loader path when the application
+# starts. Mirror that environment while inspecting bundled ELF files so that
+# sibling libraries (for example libssl.so.3 -> libcrypto.so.3) resolve here.
+DIST_LD_LIBRARY_PATH="$DIST_RUNTIME_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 MAIN_DESCRIPTION="$(file -b "$APP_EXECUTABLE")"
 case "$MAIN_DESCRIPTION" in
@@ -41,7 +48,7 @@ for candidate in "${ELF_FILES[@]}"; do
   esac
 
   checked_elf_count=$((checked_elf_count + 1))
-  if ! ldd_output="$(ldd "$candidate" 2>&1)"; then
+  if ! ldd_output="$(LD_LIBRARY_PATH="$DIST_LD_LIBRARY_PATH" ldd "$candidate" 2>&1)"; then
     echo "$ldd_output" >&2
     fail "ldd could not inspect $candidate"
   fi
@@ -75,7 +82,7 @@ vlc_plugin_dirs="$(find "$DIST_DIR" -type d -path '*/vlc/plugins' -print)"
 
 QXCB_PATH="$(find "$DIST_DIR" -type f -name 'libqxcb.so' -print -quit)"
 [ -n "$QXCB_PATH" ] || fail "Qt xcb platform plugin libqxcb.so is missing"
-if ! qxcb_ldd="$(ldd "$QXCB_PATH" 2>&1)"; then
+if ! qxcb_ldd="$(LD_LIBRARY_PATH="$DIST_LD_LIBRARY_PATH" ldd "$QXCB_PATH" 2>&1)"; then
   echo "$qxcb_ldd" >&2
   fail "ldd could not inspect $QXCB_PATH"
 fi
@@ -93,6 +100,16 @@ LIBFFI_RUNTIME="$(find "$DIST_DIR" -type f -name 'libffi.so.7*' -print -quit)"
 [ -n "$LIBFFI_RUNTIME" ] || fail "bundled libffi.so.7 compatibility runtime was not found"
 echo "libffi compatibility runtime: $LIBFFI_RUNTIME"
 
+OPENSSL_CRYPTO_RUNTIME="$(find "$DIST_DIR" -type f -name 'libcrypto.so.3' -print -quit)"
+OPENSSL_SSL_RUNTIME="$(find "$DIST_DIR" -type f -name 'libssl.so.3' -print -quit)"
+[ -n "$OPENSSL_CRYPTO_RUNTIME" ] || fail "bundled OpenSSL 3 libcrypto runtime was not found"
+[ -n "$OPENSSL_SSL_RUNTIME" ] || fail "bundled OpenSSL 3 libssl runtime was not found"
+echo "OpenSSL crypto runtime: $OPENSSL_CRYPTO_RUNTIME"
+echo "OpenSSL TLS runtime: $OPENSSL_SSL_RUNTIME"
+
+OPENSSL_LICENSE="$(find "$DIST_DIR" -type f -path '*/licenses/openssl/LICENSE.txt' -print -quit)"
+[ -n "$OPENSSL_LICENSE" ] || fail "bundled OpenSSL license was not found"
+
 APP_ICON="$(find "$DIST_DIR" -type f -path '*/video_event_logger/assets/app_icon.svg' -print -quit)"
 [ -n "$APP_ICON" ] || fail "application icon is missing from the PyInstaller output"
 
@@ -109,10 +126,15 @@ for metadata_field in \
   "python-vlc version:"; do
   grep -q "^$metadata_field" "$BUILD_INFO_PATH" || fail "BUILD_INFO.txt lacks field: $metadata_field"
 done
+grep -q '^Bundled OpenSSL version: OpenSSL 3\.' "$BUILD_INFO_PATH" \
+  || fail "BUILD_INFO.txt lacks the bundled OpenSSL 3 version"
 
 if ! command -v vlc >/dev/null 2>&1 || [ ! -f /usr/lib/x86_64-linux-gnu/libvlc.so.5 ]; then
   fail "builder VLC/libVLC is unavailable for the packaged smoke test"
 fi
+VLC_XCB_X11_PLUGIN="/usr/lib/x86_64-linux-gnu/vlc/plugins/video_output/libxcb_x11_plugin.so"
+[ -f "$VLC_XCB_X11_PLUGIN" ] \
+  || fail "VLC xcb_x11 video-output plugin is unavailable: $VLC_XCB_X11_PLUGIN"
 QT_QPA_PLATFORM=offscreen "$APP_EXECUTABLE" --smoke-test
 
 echo "Ubuntu 20.04 package validation passed."

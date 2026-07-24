@@ -1,7 +1,14 @@
 import sys
 from typing import List, Optional
 
+# libVLC's X11 embedding contract requires XInitThreads() before Qt (or any
+# other library) opens the X display. Keep this call above every PySide6 import.
+from video_event_logger.services.x11 import initialize_x11_threads
+
+X11_THREADS_INITIALIZED = initialize_x11_threads()
+
 from PySide6.QtGui import QIcon
+from PySide6.QtNetwork import QSslSocket
 from PySide6.QtWidgets import QApplication
 
 from video_event_logger.app_config import APP_ICON_PATH, APP_NAME, APP_VERSION
@@ -17,6 +24,8 @@ def _create_application(arguments: Optional[List[str]] = None) -> QApplication:
 
 def run_smoke_test() -> int:
     try:
+        if sys.platform.startswith("linux") and not X11_THREADS_INITIALIZED:
+            raise RuntimeError("XInitThreads() could not be initialized before Qt")
         app = _create_application([sys.argv[0], "--smoke-test"])
         from video_event_logger.models.annotation import AnnotationDocument
         from video_event_logger.ui.main_window import MainWindow
@@ -26,6 +35,14 @@ def run_smoke_test() -> int:
             raise RuntimeError("Application icon is missing: %s" % APP_ICON_PATH)
         if QIcon(str(APP_ICON_PATH)).isNull():
             raise RuntimeError("Qt could not load the application icon: %s" % APP_ICON_PATH)
+        if not QSslSocket.supportsSsl():
+            raise RuntimeError(
+                "Qt HTTPS/TLS support is unavailable. Build=%s Runtime=%s"
+                % (
+                    QSslSocket.sslLibraryBuildVersionString(),
+                    QSslSocket.sslLibraryVersionString(),
+                )
+            )
         if vlc is None:
             raise RuntimeError("python-vlc could not be imported: %s" % VLC_IMPORT_ERROR)
 
@@ -48,7 +65,16 @@ def run_smoke_test() -> int:
         _ = (app, AnnotationDocument, MainWindow)
         print("Video Event Logger smoke test passed.")
         print("Application version: %s" % APP_VERSION)
+        print(
+            "Qt TLS: build=%s runtime=%s"
+            % (
+                QSslSocket.sslLibraryBuildVersionString(),
+                QSslSocket.sslLibraryVersionString(),
+            )
+        )
         print("libVLC version: %s" % libvlc_version)
+        if sys.platform.startswith("linux"):
+            print("XInitThreads before Qt: initialized")
         print("libVLC Instance and MediaPlayer: initialized")
         print("Application icon: %s" % APP_ICON_PATH)
         return 0
@@ -61,6 +87,12 @@ def main() -> int:
     if "--smoke-test" in sys.argv[1:]:
         return run_smoke_test()
 
+    if not X11_THREADS_INITIALIZED:
+        print(
+            "Warning: XInitThreads() could not be initialized before Qt; "
+            "embedded VLC playback may be unstable.",
+            file=sys.stderr,
+        )
     ensure_data_dirs()
     app = _create_application()
     from video_event_logger.ui.main_window import MainWindow
