@@ -127,6 +127,7 @@ class EventLoggingController:
         self._add_shortcut("Space", self._hotkey_toggle_play_pause)
         self._add_shortcut("A", self._hotkey_set_interval_start)
         self._add_shortcut("D", self._hotkey_set_interval_end)
+        self._add_shortcut("F", self._hotkey_reset_zoom)
         self._add_shortcut("Delete", self._hotkey_delete_selected_interval)
         self._add_shortcut("Left", lambda: self._hotkey_seek_relative(-1.0))
         self._add_shortcut("Right", lambda: self._hotkey_seek_relative(1.0))
@@ -674,6 +675,10 @@ class EventLoggingController:
     def _hotkey_exit_fullscreen(self) -> None:
         if self.window.video_fullscreen_enabled:
             self.window.set_fullscreen(False)
+
+    def _hotkey_reset_zoom(self) -> None:
+        if hasattr(self.video_player, '_reset_zoom'):
+            self.video_player._reset_zoom()
 
     def _save_checkpoint(
         self,

@@ -4,7 +4,8 @@ from ctypes.util import find_library
 from pathlib import Path
 from typing import List, Optional
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QPainter, QRegion, QWheelEvent
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from video_event_logger.ui.fullscreen_hud import FullscreenHud
@@ -118,15 +119,24 @@ class VideoPlayer(QWidget):
         self.current_path = None  # type: Optional[Path]
         self.last_error = None  # type: Optional[str]
         self.rotation_degrees = 0
+        self._zoom_level = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
 
-        self.video_surface = QWidget(self)
+        # Create a container widget to clip the video surface
+        self.video_container = QWidget(self)
+        self.video_container.setStyleSheet("background: #111;")
+        self.video_container.setMinimumHeight(120)
+        self.video_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.video_container.setAutoFillBackground(True)  # Fill with background to prevent UI bleeding through
+
+        self.video_surface = QWidget(self.video_container)
         self.video_surface.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.video_surface.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
-        self.video_surface.setMinimumHeight(120)
-        self.video_surface.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.video_surface.setStyleSheet("background: #111;")
         self.video_surface.setMouseTracking(True)
         self.video_surface.installEventFilter(self)
+
         self.fullscreen_hud = FullscreenHud(self.video_surface)
         self.fullscreen_hud.seek_previewed.connect(self.fullscreen_seek_previewed.emit)
         self.fullscreen_hud.seek_requested.connect(self.fullscreen_seek_requested.emit)
@@ -134,8 +144,11 @@ class VideoPlayer(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self.video_surface, 1)
+        layout.addWidget(self.video_container, 1)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        # Install event filter on container to handle resizing
+        self.video_container.installEventFilter(self)
 
         if vlc is None:
             self.last_error = "python-vlc could not be imported: %s" % VLC_IMPORT_ERROR
@@ -182,16 +195,174 @@ class VideoPlayer(QWidget):
         self.fullscreen_hud.show_notification(text, level, persistent)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
-        if (
-            watched is self.video_surface
-            and event.type() == QEvent.Type.MouseButtonDblClick
-        ):
-            self.fullscreen_toggle_requested.emit()
-            return True
+        if watched is self.video_surface:
+            if event.type() == QEvent.Type.MouseButtonDblClick:
+                self.fullscreen_toggle_requested.emit()
+                return True
+            elif event.type() == QEvent.Type.Wheel:
+                return self._handle_wheel_event(event)
+        elif watched is self.video_container:
+            if event.type() == QEvent.Type.Resize:
+                self._apply_zoom_transform()
+
         return super().eventFilter(watched, event)
 
     def is_available(self) -> bool:
         return self.media_player is not None and self.instance is not None
+
+    def _reset_zoom(self) -> None:
+        """Reset zoom to 1.0x (original size) and center the video."""
+        self._zoom_level = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
+        self._apply_zoom_transform()
+
+    def _handle_wheel_event(self, event: QWheelEvent) -> bool:
+        """Handle Ctrl+Scroll zoom interaction."""
+        if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            return False
+
+        new_zoom = self._calculate_new_zoom_level(event.angleDelta().y())
+        if new_zoom == self._zoom_level:
+            return True
+
+        mouse_container_pos = self._get_mouse_position_in_container(event.position())
+        new_pan_x, new_pan_y = self._calculate_pan_for_cursor_zoom(
+            mouse_container_pos, new_zoom
+        )
+
+        self._zoom_level = new_zoom
+        self._pan_x = new_pan_x
+        self._pan_y = new_pan_y
+
+        self._apply_zoom_transform()
+        return True
+
+    def _calculate_new_zoom_level(self, wheel_delta: float) -> float:
+        """Calculate new zoom level from wheel delta, clamped to valid range."""
+        ZOOM_FACTOR = 1.05
+        MIN_ZOOM = 1.0
+        MAX_ZOOM = 5.0
+
+        zoom_multiplier = ZOOM_FACTOR if wheel_delta > 0 else 1.0 / ZOOM_FACTOR
+        new_zoom = self._zoom_level * zoom_multiplier
+        return max(MIN_ZOOM, min(new_zoom, MAX_ZOOM))
+
+    def _get_mouse_position_in_container(self, surface_pos: QPointF) -> QPointF:
+        """Convert mouse position from video_surface to video_container coordinates."""
+        mouse_global = self.video_surface.mapToGlobal(surface_pos.toPoint())
+        return self.video_container.mapFromGlobal(mouse_global)
+
+    def _calculate_pan_for_cursor_zoom(
+        self, cursor_pos: QPointF, new_zoom: float
+    ) -> tuple[float, float]:
+        """Calculate pan offset to keep the point under cursor fixed during zoom."""
+        container_width = self.video_container.width()
+        container_height = self.video_container.height()
+        center_x = container_width / 2.0
+        center_y = container_height / 2.0
+
+        # Map cursor position to unzoomed video coordinate space
+        unzoomed_x = (cursor_pos.x() - center_x - self._pan_x) / self._zoom_level
+        unzoomed_y = (cursor_pos.y() - center_y - self._pan_y) / self._zoom_level
+
+        # Calculate pan that keeps that point under the cursor at new zoom
+        new_pan_x = cursor_pos.x() - center_x - unzoomed_x * new_zoom
+        new_pan_y = cursor_pos.y() - center_y - unzoomed_y * new_zoom
+
+        return new_pan_x, new_pan_y
+
+    def _apply_zoom_transform(self) -> None:
+        """Apply zoom and pan transformation to video surface."""
+        container_width = self.video_container.width()
+        container_height = self.video_container.height()
+
+        surface_width = int(container_width * self._zoom_level)
+        surface_height = int(container_height * self._zoom_level)
+
+        x, y = self._calculate_constrained_position(
+            container_width, container_height, surface_width, surface_height
+        )
+
+        self._apply_geometry_with_mask(x, y, surface_width, surface_height)
+
+    def _calculate_constrained_position(
+        self,
+        container_width: int,
+        container_height: int,
+        surface_width: int,
+        surface_height: int,
+    ) -> tuple[int, int]:
+        """Calculate video surface position, constrained to fill viewport."""
+        # Start with centered position plus pan offset
+        x = int((container_width - surface_width) / 2.0 + self._pan_x)
+        y = int((container_height - surface_height) / 2.0 + self._pan_y)
+
+        # Constrain horizontally
+        if x > 0:
+            x = 0
+            self._pan_x = x - (container_width - surface_width) / 2.0
+        elif x + surface_width < container_width:
+            x = container_width - surface_width
+            self._pan_x = x - (container_width - surface_width) / 2.0
+
+        # Constrain vertically
+        if y > 0:
+            y = 0
+            self._pan_y = y - (container_height - surface_height) / 2.0
+        elif y + surface_height < container_height:
+            y = container_height - surface_height
+            self._pan_y = y - (container_height - surface_height) / 2.0
+
+        return x, y
+
+    def _apply_geometry_with_mask(
+        self, x: int, y: int, width: int, height: int
+    ) -> None:
+        """Apply geometry and clipping mask to video surface, preventing visual artifacts."""
+        was_visible = self.video_surface.isVisible()
+        if was_visible:
+            self.video_surface.hide()
+
+        self._update_clipping_mask(x, y, width, height)
+        self.video_surface.setGeometry(x, y, width, height)
+
+        if was_visible:
+            self.video_surface.show()
+
+    def _update_clipping_mask(self, x: int, y: int, width: int, height: int) -> None:
+        """Update clipping mask to prevent video from rendering outside viewport."""
+        container_width = self.video_container.width()
+        container_height = self.video_container.height()
+
+        if not self._needs_clipping(x, y, width, height, container_width, container_height):
+            self.video_surface.clearMask()
+            return
+
+        visible_x = max(0, -x)
+        visible_y = max(0, -y)
+        visible_width = min(width - visible_x, container_width - max(0, x))
+        visible_height = min(height - visible_y, container_height - max(0, y))
+
+        mask_region = QRegion(visible_x, visible_y, visible_width, visible_height)
+        self.video_surface.setMask(mask_region)
+
+    @staticmethod
+    def _needs_clipping(
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        container_width: int,
+        container_height: int,
+    ) -> bool:
+        """Check if video surface extends beyond container bounds."""
+        return (
+            x < 0
+            or y < 0
+            or x + width > container_width
+            or y + height > container_height
+        )
 
     def _initialize_vlc(self) -> bool:
         attempts = _vlc_initialization_attempts()
