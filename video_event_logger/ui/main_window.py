@@ -19,6 +19,9 @@ class MainWindow(QMainWindow):
         self.show_popup_after_interval_enabled = self._setting_is_true(
             self.settings.value("annotation/show_popup_after_interval", True)
         )
+        self.fullscreen_progress_bar_always_on = self._setting_is_true(
+            self.settings.value("appearance/fullscreen_progress_bar_always_on", False)
+        )
         self.api_endpoint_url = str(
             self.settings.value("api/endpoint_url", "") or ""
         ).strip()
@@ -37,6 +40,7 @@ class MainWindow(QMainWindow):
         self._build_menu_bar()
         self.workspace.video_player.fullscreen_toggle_requested.connect(self.toggle_fullscreen)
         self.set_show_popup_after_interval(self.show_popup_after_interval_enabled)
+        self.set_fullscreen_progress_bar_always_on(self.fullscreen_progress_bar_always_on)
         self.set_dark_mode(self.dark_mode_enabled)
         self.set_video_fullscreen_available(False)
         self.set_file_actions_video_loaded(False)
@@ -96,6 +100,18 @@ class MainWindow(QMainWindow):
         self.fullscreen_action.setStatusTip("Show only the video in full-screen mode")
         self.fullscreen_action.toggled.connect(self.set_fullscreen)
         self.view_menu.addAction(self.fullscreen_action)
+
+        self.fullscreen_progress_bar_action = QAction(
+            "Fullscreen progress bar always ON", self
+        )
+        self.fullscreen_progress_bar_action.setCheckable(True)
+        self.fullscreen_progress_bar_action.setStatusTip(
+            "Keep the full screen control bar visible instead of hiding it after 3 seconds"
+        )
+        self.fullscreen_progress_bar_action.toggled.connect(
+            self.set_fullscreen_progress_bar_always_on
+        )
+        self.view_menu.addAction(self.fullscreen_progress_bar_action)
 
         self.rotation_menu = self.view_menu.addMenu("Video rotation")
         self.rotation_action_group = QActionGroup(self)
@@ -260,6 +276,13 @@ class MainWindow(QMainWindow):
         self.settings.setValue("annotation/show_popup_after_interval", enabled)
         if hasattr(self, "interval_popup_action"):
             self._sync_checked_state(self.interval_popup_action, enabled)
+
+    def set_fullscreen_progress_bar_always_on(self, enabled: bool) -> None:
+        self.fullscreen_progress_bar_always_on = enabled
+        self.workspace.video_player.set_fullscreen_hud_controls_always_visible(enabled)
+        self.settings.setValue("appearance/fullscreen_progress_bar_always_on", enabled)
+        if hasattr(self, "fullscreen_progress_bar_action"):
+            self._sync_checked_state(self.fullscreen_progress_bar_action, enabled)
 
     def set_save_state(self, state: str) -> None:
         appearances = {

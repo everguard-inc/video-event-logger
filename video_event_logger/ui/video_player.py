@@ -158,6 +158,9 @@ class VideoPlayer(QWidget):
     def set_fullscreen_hud_playback_active(self, active: bool) -> None:
         self.fullscreen_hud.set_playback_active(active)
 
+    def set_fullscreen_hud_controls_always_visible(self, enabled: bool) -> None:
+        self.fullscreen_hud.set_controls_always_visible(enabled)
+
     def set_fullscreen_hud_speed(self, speed: float) -> None:
         self.fullscreen_hud.set_speed(speed)
 

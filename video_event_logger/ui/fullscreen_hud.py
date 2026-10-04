@@ -20,6 +20,7 @@ class FullscreenHud(QObject):
         self.video_surface = video_surface
         self.active = False
         self.controls_visible = False
+        self.controls_always_visible = False
         self.is_slider_dragging = False
         self.notification_active = False
         self.duration_seconds = None  # type: Optional[float]
@@ -151,6 +152,14 @@ class FullscreenHud(QObject):
             self.bottom_bar.hide()
             self.interval_label.hide()
 
+    def set_controls_always_visible(self, enabled: bool) -> None:
+        self.controls_always_visible = enabled
+        if not self.active:
+            return
+        if enabled:
+            self.controls_hide_timer.stop()
+        self.notify_user_activity()
+
     def notify_user_activity(self) -> None:
         if not self.active:
             return
@@ -279,7 +288,7 @@ class FullscreenHud(QObject):
         self._raise_widgets()
 
     def _auto_hide_controls(self) -> None:
-        if not self.active:
+        if not self.active or self.controls_always_visible:
             return
         if self.is_slider_dragging or self.bottom_bar.geometry().contains(QCursor.pos()):
             self.controls_hide_timer.start(500)

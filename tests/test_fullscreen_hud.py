@@ -55,6 +55,17 @@ class FullscreenHudTest(unittest.TestCase):
         self.assertEqual(requested, [-10.0, -1.0, 1.0, 10.0])
         self.assertTrue(hud.seek_back_10_button.isVisible())
 
+    def test_always_visible_controls_are_not_auto_hidden(self) -> None:
+        hud = self.make_hud()
+
+        hud.set_controls_always_visible(True)
+        hud._auto_hide_controls()
+        self.assertTrue(hud.bottom_bar.isVisible())
+
+        hud.set_controls_always_visible(False)
+        hud._auto_hide_controls()
+        self.assertFalse(hud.bottom_bar.isVisible())
+
     def test_hud_is_compact_centered_and_inside_the_video_surface(self) -> None:
         hud = self.make_hud()
         hud.video_surface.resize(1920, 1080)
