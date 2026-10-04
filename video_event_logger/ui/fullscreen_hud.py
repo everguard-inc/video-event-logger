@@ -2,7 +2,7 @@ from typing import Optional
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSlider, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, QWidget
 
 from video_event_logger.services.time_utils import seconds_to_hhmmss
 
@@ -10,6 +10,7 @@ from video_event_logger.services.time_utils import seconds_to_hhmmss
 class FullscreenHud(QObject):
     seek_previewed = Signal(float)
     seek_requested = Signal(float)
+    seek_relative_requested = Signal(float)
 
     MAX_CONTROL_BAR_WIDTH = 920
     MAX_STATUS_LABEL_WIDTH = 560
@@ -60,6 +61,10 @@ class FullscreenHud(QObject):
             "QSlider::sub-page:horizontal { background: #3e9bf2; border-radius: 3px; }"
             "QSlider::handle:horizontal { width: 16px; margin: -5px 0; "
             "background: #ffffff; border: 1px solid #2d78bd; border-radius: 8px; }"
+            "QPushButton { color: #f5f7fa; background: #26313d; "
+            "border: 1px solid #7b8794; border-radius: 4px; padding: 3px 6px; }"
+            "QPushButton:hover { background: #34424f; }"
+            "QPushButton:pressed { background: #246fbd; }"
         )
         bottom_layout = QHBoxLayout(self.bottom_bar)
         bottom_layout.setContentsMargins(8, 4, 8, 4)
@@ -85,9 +90,18 @@ class FullscreenHud(QObject):
             "border-radius: 4px; padding: 3px 5px; font-weight: 700; }"
         )
 
+        self.seek_back_10_button = self._make_seek_button("-10s", -10.0)
+        self.seek_back_button = self._make_seek_button("-1s", -1.0)
+        self.seek_forward_button = self._make_seek_button("+1s", 1.0)
+        self.seek_forward_10_button = self._make_seek_button("+10s", 10.0)
+
+        bottom_layout.addWidget(self.seek_back_10_button)
+        bottom_layout.addWidget(self.seek_back_button)
         bottom_layout.addWidget(self.current_time_label)
         bottom_layout.addWidget(self.timeline_slider, 1)
         bottom_layout.addWidget(self.duration_label)
+        bottom_layout.addWidget(self.seek_forward_button)
+        bottom_layout.addWidget(self.seek_forward_10_button)
         bottom_layout.addWidget(self.playback_label)
         bottom_layout.addWidget(self.speed_label)
 
@@ -96,6 +110,12 @@ class FullscreenHud(QObject):
         self.timeline_slider.sliderReleased.connect(self._finish_slider_drag)
         self.video_surface.installEventFilter(self)
         self.set_active(False)
+
+    def _make_seek_button(self, text: str, seconds_delta: float) -> QPushButton:
+        button = QPushButton(text)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.clicked.connect(lambda: self._request_relative_seek(seconds_delta))
+        return button
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
         if watched is self.video_surface and event.type() in (
@@ -230,6 +250,10 @@ class FullscreenHud(QObject):
         self.current_time_label.setText(seconds_to_hhmmss(seconds))
         self.notify_user_activity()
         self.seek_requested.emit(seconds)
+
+    def _request_relative_seek(self, seconds_delta: float) -> None:
+        self.notify_user_activity()
+        self.seek_relative_requested.emit(seconds_delta)
 
     def _hide_notification(self) -> None:
         self.notification_active = False

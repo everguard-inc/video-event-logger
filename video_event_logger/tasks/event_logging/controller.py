@@ -857,19 +857,17 @@ class EventLoggingController:
             self.video_player.pause()
             self.workspace.set_playback_active(False)
             self.playback_interval_end_seconds = None
-            self._reset_speed_to_normal()
             self._refresh_rotation_enabled()
             return
-        self._reset_speed_to_normal()
+        self._apply_current_speed()
         self.video_player.play()
         self.workspace.set_playback_active(True)
         self._refresh_rotation_enabled()
-        QTimer.singleShot(100, self._reset_speed_to_normal)
+        QTimer.singleShot(100, self._apply_current_speed)
 
-    def _reset_speed_to_normal(self) -> None:
-        self.video_player.set_rate(1.0)
-        self.current_playback_speed = 1.0
-        self.workspace.set_active_speed(1.0)
+    def _apply_current_speed(self) -> None:
+        self.video_player.set_rate(self.current_playback_speed)
+        self.workspace.set_active_speed(self.current_playback_speed)
 
     def _set_video_loaded(self, loaded: bool) -> None:
         self.workspace.set_video_loaded(loaded)

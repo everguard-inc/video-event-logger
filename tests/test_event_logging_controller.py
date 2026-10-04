@@ -118,6 +118,36 @@ class EventLoggingControllerPlaybackControlsTest(unittest.TestCase):
         controller.workspace.set_active_speed.assert_called_once_with(2.0)
         self.assertEqual(controller.current_playback_speed, 2.0)
 
+    def _make_play_pause_controller(self, playing: bool) -> EventLoggingController:
+        controller = object.__new__(EventLoggingController)
+        controller.current_playback_speed = 4.0
+        controller.playback_interval_end_seconds = None
+        controller.video_player = Mock()
+        controller.video_player.is_playing.return_value = playing
+        controller.workspace = Mock()
+        controller._refresh_rotation_enabled = Mock()
+        return controller
+
+    def test_pause_keeps_selected_speed(self) -> None:
+        controller = self._make_play_pause_controller(playing=True)
+
+        controller._toggle_play_pause()
+
+        controller.video_player.pause.assert_called_once()
+        controller.video_player.set_rate.assert_not_called()
+        self.assertEqual(controller.current_playback_speed, 4.0)
+
+    @patch("video_event_logger.tasks.event_logging.controller.QTimer")
+    def test_play_resumes_with_selected_speed(self, timer) -> None:
+        controller = self._make_play_pause_controller(playing=False)
+
+        controller._toggle_play_pause()
+
+        controller.video_player.play.assert_called_once()
+        controller.video_player.set_rate.assert_called_once_with(4.0)
+        controller.workspace.set_active_speed.assert_called_once_with(4.0)
+        timer.singleShot.assert_called_once_with(100, controller._apply_current_speed)
+
     def test_escape_leaves_fullscreen_without_canceling_interval(self) -> None:
         controller = object.__new__(EventLoggingController)
         controller.window = Mock()
