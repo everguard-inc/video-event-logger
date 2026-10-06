@@ -1,8 +1,8 @@
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtCore import QByteArray, Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QDialog,
@@ -29,6 +29,7 @@ from video_event_logger.services.annotation_api import (
     validate_api_settings,
 )
 from video_event_logger.services.annotation_store import AnnotationStore, CorruptedAnnotationError
+from video_event_logger.services.file_manager import show_file_in_folder
 from video_event_logger.services.path_utils import is_supported_video
 from video_event_logger.services.validation import validate_document
 from video_event_logger.tasks.event_logging.ui.help_dialog import AnnotatorHelpDialog
@@ -380,7 +381,7 @@ class EventLoggingController:
         path = self._annotation_path_for_ui()
         if path is None:
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+        show_file_in_folder(path)
 
     def upload_annotations(self) -> None:
         if self.api_upload_reply is not None:
