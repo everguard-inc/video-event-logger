@@ -130,6 +130,7 @@ class VideoPlayer(QWidget):
         self.fullscreen_hud = FullscreenHud(self.video_surface)
         self.fullscreen_hud.seek_previewed.connect(self.fullscreen_seek_previewed.emit)
         self.fullscreen_hud.seek_requested.connect(self.fullscreen_seek_requested.emit)
+        self.fullscreen_hud.seek_relative_requested.connect(self.seek_relative)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -156,6 +157,9 @@ class VideoPlayer(QWidget):
 
     def set_fullscreen_hud_playback_active(self, active: bool) -> None:
         self.fullscreen_hud.set_playback_active(active)
+
+    def set_fullscreen_hud_controls_always_visible(self, enabled: bool) -> None:
+        self.fullscreen_hud.set_controls_always_visible(enabled)
 
     def set_fullscreen_hud_speed(self, speed: float) -> None:
         self.fullscreen_hud.set_speed(speed)
