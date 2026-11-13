@@ -152,6 +152,7 @@ class EventLoggingControllerPlaybackControlsTest(unittest.TestCase):
         controller = object.__new__(EventLoggingController)
         controller.window = Mock()
         controller.window.video_fullscreen_enabled = True
+        controller.workspace = Mock()
         controller.annotation_service = Mock()
 
         controller._hotkey_exit_fullscreen()
@@ -163,6 +164,7 @@ class EventLoggingControllerPlaybackControlsTest(unittest.TestCase):
         controller = object.__new__(EventLoggingController)
         controller.window = Mock()
         controller.window.video_fullscreen_enabled = True
+        controller.workspace = Mock()
         controller.annotation_service = Mock()
         controller.annotation_service.has_pending_interval.return_value = True
         controller.workspace = Mock()
@@ -346,8 +348,8 @@ class EventLoggingControllerCheckpointTest(unittest.TestCase):
         self.assertEqual(result_data["intervals"], [])
 
     @patch(
-        "video_event_logger.tasks.event_logging.controller.QFileDialog.getOpenFileName",
-        return_value=("/tmp/sample.mp4", ""),
+        "video_event_logger.tasks.event_logging.controller.QFileDialog.getOpenFileNames",
+        return_value=(["/tmp/sample.mp4"], ""),
     )
     def test_opening_video_immediately_creates_empty_annotation_json(
         self,
@@ -362,6 +364,7 @@ class EventLoggingControllerCheckpointTest(unittest.TestCase):
         controller.project_service = ProjectService(AnnotationStore())
         controller.annotation_service = AnnotationService()
         controller.current_video_path = None
+        controller.download_dialog = None
         controller.document = None
         controller.last_annotation_path = None
         controller._set_video_loaded = Mock()
@@ -369,6 +372,8 @@ class EventLoggingControllerCheckpointTest(unittest.TestCase):
         controller._refresh_ui_from_document = Mock()
         controller._prepare_video_preview = Mock()
         controller._clear_event_type_focus = Mock()
+        controller.event_type_apply_timer = Mock()
+        controller.scrub_seek_timer = Mock()
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_directory = Path(temporary_directory)
@@ -379,7 +384,9 @@ class EventLoggingControllerCheckpointTest(unittest.TestCase):
                 "video_event_logger.services.path_utils.LEGACY_AUTOSAVE_DIR",
                 data_directory / "autosave",
             ):
-                controller.open_video_file()
+                video_path = data_directory / "sample.mp4"
+                video_path.touch()
+                controller._open_video_path(video_path)
                 annotation_path = (
                     controller.project_service.annotation_path_for_video_name(
                         "sample.mp4"
@@ -437,10 +444,12 @@ class EventLoggingControllerApiUploadTest(unittest.TestCase):
         controller.last_annotation_path = annotation_path
         controller.active_event_type = "event"
         controller.api_upload_reply = None
-        controller.api_upload_progress = None
+        controller.submit_dialog = None
+        controller.upload_results = {}
         controller.event_type_apply_timer = Mock()
         controller.workspace = Mock()
         controller.workspace.event_type_text.return_value = "event"
+        controller.workspace.playlist_panel.paths = [Path("sample.mp4"), Path("next.mp4")]
         controller.window = Mock()
         controller.window.api_connection_settings.return_value = (
             "https://example.org/api/v1/annotations",
@@ -453,12 +462,21 @@ class EventLoggingControllerApiUploadTest(unittest.TestCase):
         controller._update_document_runtime_state = Mock()
         controller._save_checkpoint = Mock(return_value=True)
         controller._set_status_text = Mock()
+        controller._annotation_file_exists = Mock(return_value=True)
         return controller
 
-    @patch("video_event_logger.tasks.event_logging.controller.QProgressDialog")
-    def test_upload_posts_exact_annotation_json_with_token_auth(
+    def finished_reply(self, status, body, error=None):  # type: ignore[no-untyped-def]
+        reply = Mock()
+        reply.attribute.return_value = status
+        reply.readAll.return_value = body
+        reply.error.return_value = error or QNetworkReply.NetworkError.NoError
+        reply.errorString.return_value = ""
+        return reply
+
+    @patch("video_event_logger.tasks.event_logging.controller.SubmitDialog")
+    def test_upload_opens_review_then_posts_exact_json_with_token_auth(
         self,
-        progress_type: Mock,
+        dialog_type: Mock,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             annotation_path = Path(temporary_directory) / "sample.annotations.json"
@@ -469,6 +487,12 @@ class EventLoggingControllerApiUploadTest(unittest.TestCase):
             controller.api_network_manager.post.return_value = reply
 
             controller.upload_annotations()
+            dialog = dialog_type.return_value
+            dialog.open.assert_called_once_with()
+            # Nothing is sent before the annotator confirms the review step.
+            controller.api_network_manager.post.assert_not_called()
+            self.assertTrue(dialog_type.call_args.args[3])  # has next video
+            controller._send_upload()
 
         request, posted_payload = controller.api_network_manager.post.call_args.args
         self.assertEqual(
@@ -482,7 +506,7 @@ class EventLoggingControllerApiUploadTest(unittest.TestCase):
         )
         controller.window.set_api_upload_available.assert_called_once_with(False)
         reply.finished.connect.assert_called_once()
-        progress_type.return_value.show.assert_called_once_with()
+        dialog.show_sending.assert_called_once_with()
 
     @patch("video_event_logger.tasks.event_logging.controller.QMessageBox.warning")
     def test_active_interval_must_be_finished_before_upload(
@@ -504,59 +528,60 @@ class EventLoggingControllerApiUploadTest(unittest.TestCase):
         )
         controller.api_network_manager.post.assert_not_called()
 
-    @patch("video_event_logger.tasks.event_logging.controller.QMessageBox.information")
-    @patch("video_event_logger.tasks.event_logging.controller.QMessageBox.warning")
-    def test_duplicate_response_is_reported_separately(
-        self,
-        warning: Mock,
-        information: Mock,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            annotation_path = Path(temporary_directory) / "sample.annotations.json"
-            annotation_path.write_text("{}", encoding="utf-8")
-            controller = self.make_controller(annotation_path)
-            reply = Mock()
-            reply.attribute.return_value = 409
-            reply.readAll.return_value = b'{"detail":"Already uploaded"}'
-            reply.error.return_value = QNetworkReply.NetworkError.ContentConflictError
-            reply.errorString.return_value = "Conflict"
-            controller.api_upload_reply = reply
-            controller.api_upload_progress = Mock()
+    def test_every_server_answer_reaches_the_result_screen(self) -> None:
+        cases = [
+            (201, b'{"status":"export_queued","message":"5 clips queued"}', "success", "Submitted", "5 clips queued"),
+            (201, b'{"status":"export_pending","message":"already pending"}', "success", "Submitted", "already pending"),
+            (201, b'{"status":"unrecognized","message":"no batch group"}', "attention", "Submitted, but not matched", "no batch group"),
+            (201, b'{"status":"no_events","message":"marked reviewed"}', "success", "Marked as reviewed \u2014 no events", "marked reviewed"),
+            (409, b'{"detail":"Already uploaded"}', "attention", "Already uploaded", "Already uploaded"),
+            (400, b'{"error":"intervals[0] is invalid"}', "error", "The server rejected the annotations", "intervals[0] is invalid"),
+            (401, b'{"detail":"Invalid token."}', "error", "Access token not accepted", "Invalid token."),
+            (502, b'{"error":"Tracker unavailable"}', "error", "Server problem \u2014 try again later", "Tracker unavailable"),
+            (503, b"", "error", "Server problem \u2014 try again later", "The server could not process the upload. Try again later."),
+        ]
+        for status, body, tone, title, message in cases:
+            with self.subTest(status=status, body=body):
+                controller = self.make_controller(Path("unused.json"))
+                controller.submit_dialog = Mock()
+                reply = self.finished_reply(status, body)
+                controller.api_upload_reply = reply
 
-            controller._finish_api_upload(reply)
+                controller._finish_api_upload(reply)
+
+                outcome = controller.submit_dialog.show_result.call_args.args[0]
+                self.assertEqual((outcome.tone, outcome.title, outcome.message), (tone, title, message))
+                controller.window.set_api_upload_available.assert_called_once_with(True)
+                self.assertIs(controller.upload_results[Path("sample.mp4")], outcome)
+
+    def test_canceled_upload_returns_to_review(self) -> None:
+        controller = self.make_controller(Path("unused.json"))
+        controller.submit_dialog = Mock()
+        reply = self.finished_reply(None, b"", QNetworkReply.NetworkError.OperationCanceledError)
+        controller.api_upload_reply = reply
+
+        controller._finish_api_upload(reply)
+
+        controller.submit_dialog.show_review.assert_called_once_with()
+        controller.submit_dialog.show_result.assert_not_called()
+        controller._set_status_text.assert_called_once_with("Annotation upload canceled.")
+
+    @patch("video_event_logger.tasks.event_logging.controller.QMessageBox.warning")
+    def test_html_404_uses_friendly_endpoint_message_without_dialog(self, warning: Mock) -> None:
+        controller = self.make_controller(Path("unused.json"))
+        reply = self.finished_reply(
+            404,
+            b"<!doctype html><html><body><h1>Not Found</h1></body></html>",
+            QNetworkReply.NetworkError.ContentNotFoundError,
+        )
+        controller.api_upload_reply = reply
+
+        controller._finish_api_upload(reply)
 
         warning.assert_called_once()
-        self.assertEqual(warning.call_args.args[1], "Duplicate annotations")
-        self.assertIn("Already uploaded", warning.call_args.args[2])
-        information.assert_not_called()
-        controller.window.set_api_upload_available.assert_called_once_with(True)
-        controller._set_status_text.assert_called_once_with(
-            "Upload rejected: duplicate annotations."
-        )
-
-    @patch("video_event_logger.tasks.event_logging.controller.QMessageBox.warning")
-    def test_html_404_uses_friendly_endpoint_message(self, warning: Mock) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            annotation_path = Path(temporary_directory) / "sample.annotations.json"
-            annotation_path.write_text("{}", encoding="utf-8")
-            controller = self.make_controller(annotation_path)
-            reply = Mock()
-            reply.attribute.return_value = 404
-            reply.readAll.return_value = (
-                b"<!doctype html><html><body><h1>Not Found</h1></body></html>"
-            )
-            reply.error.return_value = QNetworkReply.NetworkError.ContentNotFoundError
-            reply.errorString.return_value = "Error transferring: server replied: Not Found"
-            controller.api_upload_reply = reply
-            controller.api_upload_progress = Mock()
-
-            controller._finish_api_upload(reply)
-
-        warning.assert_called_once_with(
-            controller.window,
-            "Upload failed",
-            "HTTP 404\n\nThe upload endpoint was not found. "
-            "Check the URL in Connection \u2192 Settings\u2026",
+        self.assertIn(
+            "The upload endpoint was not found. Check the URL in Connection \u2192 Settings\u2026",
+            warning.call_args.args[2],
         )
 
 
@@ -573,7 +598,9 @@ class VideoPreviewPreparationTest(unittest.TestCase):
 
         controller.video_player.play.assert_called_once_with()
         controller.video_player.set_time_seconds.assert_not_called()
-        single_shot.assert_called_once_with(950, controller.video_player.pause)
+        self.assertEqual(single_shot.call_args.args[0], 950)
+        single_shot.call_args.args[1]()
+        controller.video_player.pause.assert_called_once_with()
 
     @patch("video_event_logger.tasks.event_logging.controller.QTimer.singleShot")
     def test_resume_position_is_sought_once_after_playback_starts(
@@ -589,10 +616,23 @@ class VideoPreviewPreparationTest(unittest.TestCase):
         seek_callback = single_shot.call_args_list[0].args[1]
         seek_callback()
         controller.video_player.set_time_seconds.assert_called_once_with(12.5)
-        self.assertEqual(
-            single_shot.call_args_list[1].args,
-            (950, controller.video_player.pause),
-        )
+        self.assertEqual(single_shot.call_args_list[1].args[0], 950)
+        single_shot.call_args_list[1].args[1]()
+        controller.video_player.pause.assert_called_once_with()
+
+
+class PlaylistPreviewRaceTest(unittest.TestCase):
+    @patch("video_event_logger.tasks.event_logging.controller.QTimer.singleShot")
+    def test_previous_video_callbacks_cannot_seek_or_pause_next_video(self, single_shot):
+        controller = object.__new__(EventLoggingController)
+        controller.video_player = Mock()
+        controller._prepare_video_preview(12.5)
+        callbacks = [call.args[1] for call in single_shot.call_args_list]
+        controller._prepare_video_preview(0.0, autoplay=True)
+        for callback in callbacks:
+            callback()
+        controller.video_player.pause.assert_not_called()
+        controller.video_player.set_time_seconds.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,20 +1,33 @@
+from pathlib import Path
+
 from PySide6.QtCore import QEvent, QSettings, QSignalBlocker, QTime
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMainWindow
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMainWindow, QPushButton
 
 from video_event_logger.app_config import APP_NAME, APP_VERSION
 from video_event_logger.tasks.event_logging.controller import EventLoggingController
 from video_event_logger.tasks.event_logging.ui.workspace import EventLoggingWorkspace
 from video_event_logger.ui.api_settings_dialog import ApiSettingsDialog
 from video_event_logger.ui.theme import apply_theme
+from video_event_logger.services.recent_files import RecentFiles
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings = QSettings("VideoEventLogger", APP_NAME)
+        self.recent_files = RecentFiles(self.settings)
+        self.fullscreen_events_bar_enabled = self._setting_is_true(
+            self.settings.value("appearance/fullscreen_events_bar", False)
+        )
+        self.playlist_enabled = self._setting_is_true(
+            self.settings.value("appearance/playlist", True)
+        )
         self.dark_mode_enabled = self._setting_is_true(
-            self.settings.value("appearance/dark_mode", False)
+            self.settings.value("appearance/dark_mode", True)
+        )
+        self.events_bar_enabled = self._setting_is_true(
+            self.settings.value("appearance/events_bar", True)
         )
         self.show_popup_after_interval_enabled = self._setting_is_true(
             self.settings.value("annotation/show_popup_after_interval", True)
@@ -39,6 +52,14 @@ class MainWindow(QMainWindow):
         self.controller = EventLoggingController(self, self.workspace)
         self._build_menu_bar()
         self.workspace.video_player.fullscreen_toggle_requested.connect(self.toggle_fullscreen)
+        self.workspace.video_player.fullscreen_hud.events_bar_toggled.connect(self.set_fullscreen_events_bar_enabled)
+        self.workspace.playlist_panel.close_requested.connect(lambda: self.set_playlist_enabled(False))
+        self.set_playlist_enabled(self.playlist_enabled)
+        timeline = self.workspace.player_panel.annotation_timeline
+        timeline.restore_height(self.settings.value("appearance/events_bar_height", None))
+        timeline.height_changed.connect(lambda height: self.settings.setValue("appearance/events_bar_height", height))
+        self.set_events_bar_enabled(self.events_bar_enabled)
+        self.set_fullscreen_events_bar_enabled(self.fullscreen_events_bar_enabled)
         self.set_show_popup_after_interval(self.show_popup_after_interval_enabled)
         self.set_fullscreen_progress_bar_always_on(self.fullscreen_progress_bar_always_on)
         self.set_dark_mode(self.dark_mode_enabled)
@@ -50,17 +71,31 @@ class MainWindow(QMainWindow):
 
     def _build_menu_bar(self) -> None:
         self.file_menu = self.menuBar().addMenu("&File")
-        self.open_video_action = QAction("Open Video…", self)
+        self.open_video_action = QAction("Open Videos…", self)
         self.open_video_action.setShortcut(QKeySequence.StandardKey.Open)
-        self.open_video_action.setStatusTip("Open an MP4 or MKV video")
+        self.open_video_action.setStatusTip("Add MP4 or MKV videos to the playlist")
         self.open_video_action.triggered.connect(self.controller.open_video_file)
         self.file_menu.addAction(self.open_video_action)
+        self.open_folder_action = QAction("Open Folder…", self)
+        self.open_folder_action.triggered.connect(self.controller.open_video_folder)
+        self.file_menu.addAction(self.open_folder_action)
+        self.download_video_action = QAction("Download Video from Link…", self)
+        self.download_video_action.setShortcut(QKeySequence("Ctrl+Shift+J"))
+        self.addAction(self.download_video_action)
+        self.download_video_action.triggered.connect(self.controller.download_video)
+        self.file_menu.addAction(self.download_video_action)
+        self.open_annotations_action = QAction("Open Annotations…", self)
+        self.open_annotations_action.triggered.connect(self.controller.open_annotations)
+        self.file_menu.addAction(self.open_annotations_action)
+        self.recent_menu = self.file_menu.addMenu("Recent")
+        self.recent_menu.aboutToShow.connect(self._refresh_recent_menu)
+        self._refresh_recent_menu()
 
         self.file_menu.addSeparator()
-        self.validate_save_action = QAction("Validate & Save Annotations", self)
+        self.validate_save_action = QAction("Save Annotations…", self)
         self.validate_save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.validate_save_action.setStatusTip(
-            "Validate the annotations and retry the atomic JSON save"
+            "Validate and save annotations to a chosen JSON file"
         )
         self.validate_save_action.triggered.connect(self.controller.validate_and_save)
         self.file_menu.addAction(self.validate_save_action)
@@ -78,9 +113,10 @@ class MainWindow(QMainWindow):
         self.file_menu.addAction(self.show_annotation_file_action)
 
         self.file_menu.addSeparator()
-        self.upload_annotations_action = QAction("Upload Annotations…", self)
+        self.upload_annotations_action = QAction("Submit Annotations…", self)
+        self.upload_annotations_action.setShortcuts([QKeySequence("Ctrl+Return"), QKeySequence("Ctrl+Enter")])
         self.upload_annotations_action.setStatusTip(
-            "Upload the current annotation JSON to the configured connection"
+            "Review and upload this video's annotations to the configured connection"
         )
         self.upload_annotations_action.triggered.connect(
             self.controller.upload_annotations
@@ -93,16 +129,40 @@ class MainWindow(QMainWindow):
         self.quit_action.triggered.connect(self.close)
         self.file_menu.addAction(self.quit_action)
 
+        self.edit_menu = self.menuBar().addMenu("&Edit")
+        self.undo_interval_action = QAction("Undo Interval Edit", self)
+        self.undo_interval_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_interval_action.triggered.connect(self.controller.undo_interval_edit)
+        self.edit_menu.addAction(self.undo_interval_action)
+
         self.view_menu = self.menuBar().addMenu("&View")
-        self.fullscreen_action = QAction("Video Full Screen", self)
+        self.fullscreen_menu = self.view_menu.addMenu("Full Screen mode")
+        self.rotation_menu = self.view_menu.addMenu("Rotation")
+        self.events_bar_menu = self.view_menu.addMenu("Events Bar")
+        self.view_menu.addSeparator()
+        self.playlist_action = QAction("Playlist", self)
+        self.playlist_action.setCheckable(True)
+        self.playlist_action.toggled.connect(self.set_playlist_enabled)
+        self.view_menu.addAction(self.playlist_action)
+        self.events_bar_action = QAction("Show", self)
+        self.events_bar_action.setCheckable(True)
+        self.events_bar_action.setStatusTip("Show or hide the interval timeline")
+        self.events_bar_action.toggled.connect(self.set_events_bar_enabled)
+        self.events_bar_menu.addAction(self.events_bar_action)
+        self.fullscreen_events_bar_action = QAction("Show in Fullscreen (E)", self)
+        self.fullscreen_events_bar_action.setCheckable(True)
+        self.fullscreen_events_bar_action.setStatusTip("Keep an editable interval timeline below the fullscreen video")
+        self.fullscreen_events_bar_action.toggled.connect(self.set_fullscreen_events_bar_enabled)
+        self.events_bar_menu.addAction(self.fullscreen_events_bar_action)
+        self.fullscreen_action = QAction("Enable Full Screen", self)
         self.fullscreen_action.setCheckable(True)
         self.fullscreen_action.setShortcut(QKeySequence("F11"))
         self.fullscreen_action.setStatusTip("Show only the video in full-screen mode")
         self.fullscreen_action.toggled.connect(self.set_fullscreen)
-        self.view_menu.addAction(self.fullscreen_action)
+        self.fullscreen_menu.addAction(self.fullscreen_action)
 
         self.fullscreen_progress_bar_action = QAction(
-            "Fullscreen progress bar always ON", self
+            "Keep Controls Visible", self
         )
         self.fullscreen_progress_bar_action.setCheckable(True)
         self.fullscreen_progress_bar_action.setStatusTip(
@@ -111,9 +171,8 @@ class MainWindow(QMainWindow):
         self.fullscreen_progress_bar_action.toggled.connect(
             self.set_fullscreen_progress_bar_always_on
         )
-        self.view_menu.addAction(self.fullscreen_progress_bar_action)
+        self.fullscreen_menu.addAction(self.fullscreen_progress_bar_action)
 
-        self.rotation_menu = self.view_menu.addMenu("Video rotation")
         self.rotation_action_group = QActionGroup(self)
         self.rotation_action_group.setExclusive(True)
         self.rotation_actions = {}
@@ -144,7 +203,7 @@ class MainWindow(QMainWindow):
 
         self.view_menu.addSeparator()
 
-        self.view_mode_menu = self.view_menu.addMenu("View mode")
+        self.view_mode_menu = self.view_menu.addMenu("Appearance")
         self.view_mode_action_group = QActionGroup(self)
         self.view_mode_action_group.setExclusive(True)
 
@@ -183,7 +242,42 @@ class MainWindow(QMainWindow):
         )
         self.annotator_guide_action.triggered.connect(self.controller.show_help)
 
+    def _refresh_recent_menu(self) -> None:
+        if not hasattr(self, "recent_submenus"):
+            self.recent_submenus = {}
+            for kind, label in (("video", "Videos"), ("folder", "Folders"), ("annotations", "Annotations")):
+                submenu = self.recent_menu.addMenu(label)
+                submenu.setToolTipsVisible(True)
+                self.recent_submenus[kind] = submenu
+            self.recent_menu.addSeparator()
+            self.clear_history_action = self.recent_menu.addAction("Clear History")
+            self.clear_history_action.setStatusTip("Clear the recent list; files and the current playlist are kept")
+            self.clear_history_action.triggered.connect(self.recent_files.clear)
+            # Keep submenu QAction wrappers alive on PySide6 as well as their menus.
+            self.recent_menu_actions = self.recent_menu.actions()
+        for kind, submenu in self.recent_submenus.items():
+            submenu.clear()
+            entries = self.recent_files.items(kind)
+            submenu.setEnabled(bool(entries))
+            for entry in entries:
+                path = Path(entry["path"])
+                label = "%s — %s" % (path.name, path.parent)
+                if kind == "annotations":
+                    label += " (video: %s)" % Path(entry["video"]).name
+                action = submenu.addAction(label.replace("&", "&&"))
+                detail = str(path)
+                if kind == "annotations":
+                    detail += "\nVideo: " + entry["video"]
+                action.setToolTip(detail)
+                action.setStatusTip(detail.replace("\n", " · "))
+                action.triggered.connect(lambda checked=False, item=entry: self.controller.open_recent(item))
+        self.clear_history_action.setEnabled(bool(self.recent_files.entries))
+
     def _build_status_bar(self) -> None:
+        self.download_status_button = QPushButton("Downloads")
+        self.download_status_button.setToolTip("Show the download queue")
+        self.download_status_button.clicked.connect(lambda: self.controller.download_video())
+        self.statusBar().addPermanentWidget(self.download_status_button)
         self.save_state_label = QLabel()
         self.save_state_label.setObjectName("saveStateLabel")
         self.save_state_label.setMinimumWidth(170)
@@ -220,6 +314,8 @@ class MainWindow(QMainWindow):
             self.set_fullscreen(False)
 
     def set_file_actions_video_loaded(self, loaded: bool) -> None:
+        if hasattr(self, "open_annotations_action"):
+            self.open_annotations_action.setEnabled(loaded)
         if hasattr(self, "validate_save_action"):
             self.validate_save_action.setEnabled(loaded)
 
@@ -230,6 +326,8 @@ class MainWindow(QMainWindow):
     def set_api_upload_available(self, available: bool) -> None:
         if hasattr(self, "upload_annotations_action"):
             self.upload_annotations_action.setEnabled(available)
+        if hasattr(self, "workspace"):
+            self.workspace.metadata_panel.submit_button.setEnabled(available)
 
     def api_connection_settings(self):  # type: ignore[no-untyped-def]
         return self.api_endpoint_url, self.api_access_token
@@ -269,6 +367,33 @@ class MainWindow(QMainWindow):
         self.settings.setValue("appearance/dark_mode", enabled)
         self._sync_checked_state(self.bright_mode_action, not enabled)
         self._sync_checked_state(self.dark_mode_action, enabled)
+
+    def set_playlist_enabled(self, enabled: bool) -> None:
+        self.playlist_enabled = enabled
+        self.workspace.set_playlist_enabled(enabled)
+        self.settings.setValue("appearance/playlist", enabled)
+        self._sync_checked_state(self.playlist_action, enabled)
+
+    def set_events_bar_enabled(self, enabled: bool) -> None:
+        self.events_bar_enabled = enabled
+        self.workspace.player_panel.set_events_bar_enabled(enabled)
+        self.settings.setValue("appearance/events_bar", enabled)
+        if hasattr(self, "events_bar_action"):
+            self._sync_checked_state(self.events_bar_action, enabled)
+
+    def set_fullscreen_events_bar_enabled(self, enabled: bool) -> None:
+        self.fullscreen_events_bar_enabled = enabled
+        self.workspace.player_panel.set_fullscreen_events_bar_enabled(enabled)
+        self.settings.setValue("appearance/fullscreen_events_bar", enabled)
+        self._sync_checked_state(self.fullscreen_events_bar_action, enabled)
+
+    def toggle_events_bar(self) -> None:
+        """E: show or hide the events bar of the current view (window or full screen)."""
+        if self.video_fullscreen_enabled:
+            self.set_fullscreen_events_bar_enabled(not self.fullscreen_events_bar_enabled)
+            self.workspace.notify_fullscreen_user_activity()
+        else:
+            self.set_events_bar_enabled(not self.events_bar_enabled)
 
     def set_show_popup_after_interval(self, enabled: bool) -> None:
         self.show_popup_after_interval_enabled = enabled

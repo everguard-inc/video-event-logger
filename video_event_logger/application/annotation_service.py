@@ -1,8 +1,10 @@
+import math
 from collections import Counter
 from typing import Dict, List, Optional
 
 from video_event_logger.models.annotation import AnnotationDocument
 from video_event_logger.models.interval import Interval
+from video_event_logger.services.time_utils import seconds_to_hhmmss
 from video_event_logger.domain.errors import (
     InvalidIntervalError,
     InvalidIntervalIndexError,
@@ -76,6 +78,24 @@ class AnnotationService:
         interval = document.intervals[row]
         interval.event_type = event_type.strip() or interval.event_type
         interval.comment = comment
+        return interval
+
+    def update_interval_bounds(self, row: int, start: float, end: float) -> Interval:
+        document = self._require_document()
+        if row < 0 or row >= len(document.intervals):
+            raise InvalidIntervalIndexError("Invalid interval row: %s" % row)
+        if not math.isfinite(start) or not math.isfinite(end):
+            raise InvalidIntervalError("Interval times must be finite.")
+        start, end = round(start, 3), round(end, 3)
+        duration = document.video_metadata.duration_seconds
+        if start < 0 or start >= end or (duration is not None and end > duration):
+            raise InvalidIntervalError("Use 0 ≤ Start < End within the video duration.")
+        interval = document.intervals[row]
+        interval.start_time_seconds, interval.end_time_seconds = start, end
+        interval.start_time_hhmmss = seconds_to_hhmmss(start)
+        interval.end_time_hhmmss = seconds_to_hhmmss(end)
+        interval.start_frame = interval.end_frame = None
+        interval.frame_source = "unavailable"
         return interval
 
     def intervals(self) -> List[Interval]:

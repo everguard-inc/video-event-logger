@@ -148,6 +148,15 @@ class UiFeedbackTest(unittest.TestCase):
 
     @patch("video_event_logger.ui.main_window.EventLoggingController")
     @patch("video_event_logger.ui.main_window.QSettings")
+    def test_events_bar_hidden_preference_is_restored(self, settings_type, controller_type):
+        settings_type.return_value.value.side_effect = lambda key, default: False if key == "appearance/events_bar" else default
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        self.assertFalse(window.events_bar_action.isChecked())
+        self.assertTrue(window.workspace.player_panel.annotation_timeline.isHidden())
+
+    @patch("video_event_logger.ui.main_window.EventLoggingController")
+    @patch("video_event_logger.ui.main_window.QSettings")
     def test_popup_preference_is_loaded_and_saved(
         self,
         settings_type: Mock,

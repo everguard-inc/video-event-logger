@@ -68,6 +68,9 @@ def _vlc_initialization_attempts(
     platform_name: Optional[str] = None,
 ) -> List[List[str]]:
     platform_name = platform_name or sys.platform
+    # VLC 3's direct-rendering decoder buffers can be invalidated by a paused
+    # seek/flush (get_buffer/thread_get_buffer failures). Let libavcodec own its
+    # software frame buffers; keep decoding threads and hardware policy intact.
     if platform_name.startswith("linux"):
         # VLC 3.0.9.2 on Ubuntu 20.04 can render VA-API frames with shifted
         # chroma planes (a green band at the top). The VA-API DRM path avoids
@@ -77,6 +80,7 @@ def _vlc_initialization_attempts(
         # and would otherwise trigger repeated YUVA -> VAOP blending errors.
         stable_linux_args = [
             "--ignore-config",
+            "--no-avcodec-dr",
             "--avcodec-hw=vaapi_drm",
             "--vout=xcb_x11",
             "--no-osd",
@@ -85,13 +89,13 @@ def _vlc_initialization_attempts(
         ]
         return [
             stable_linux_args,
-            ["--avcodec-hw=none", "--vout=xcb_x11", "--no-video-title-show"],
-            ["--no-video-title-show"],
+            ["--no-avcodec-dr", "--avcodec-hw=none", "--vout=xcb_x11", "--no-video-title-show"],
+            ["--no-avcodec-dr", "--no-video-title-show"],
         ]
     return [
-        ["--avcodec-hw=none", "--no-video-title-show"],
-        ["--no-video-title-show"],
-        [],
+        ["--no-avcodec-dr", "--avcodec-hw=none", "--no-video-title-show"],
+        ["--no-avcodec-dr", "--no-video-title-show"],
+        ["--no-avcodec-dr"],
     ]
 
 
@@ -242,7 +246,13 @@ class VideoPlayer(QWidget):
         if not self.is_available():
             return False
         media = self._create_media(path)
-        self.media_player.set_media(media)
+        # Stop the old input/decoder before replacing media. set_media retains
+        # its own media reference, so release our creation reference afterwards.
+        self.media_player.stop()
+        try:
+            self.media_player.set_media(media)
+        finally:
+            media.release()
         self._attach_video_surface()
         self.current_path = path
         self.last_error = None

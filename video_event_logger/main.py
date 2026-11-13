@@ -24,6 +24,13 @@ def _create_application(arguments: Optional[List[str]] = None) -> QApplication:
 
 def run_smoke_test() -> int:
     try:
+        import hashlib
+        import ssl
+
+        # Exercise Python's TLS runtime as well as Qt's independent TLS backend.
+        # The downloader imports ssl; a missing native dependency prevents startup.
+        ssl.create_default_context()
+        hashlib.sha256(b"Video Event Logger").hexdigest()
         if sys.platform.startswith("linux") and not X11_THREADS_INITIALIZED:
             raise RuntimeError("XInitThreads() could not be initialized before Qt")
         app = _create_application([sys.argv[0], "--smoke-test"])
@@ -65,6 +72,7 @@ def run_smoke_test() -> int:
         _ = (app, AnnotationDocument, MainWindow)
         print("Video Event Logger smoke test passed.")
         print("Application version: %s" % APP_VERSION)
+        print("Python TLS: %s" % ssl.OPENSSL_VERSION)
         print(
             "Qt TLS: build=%s runtime=%s"
             % (

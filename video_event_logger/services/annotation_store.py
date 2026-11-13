@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import tempfile
 from json import JSONDecodeError
@@ -6,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from video_event_logger.models.annotation import AnnotationDocument
+from video_event_logger.services.validation import validate_document
 from video_event_logger.services.path_utils import (
     annotation_backup_path_for_video_name,
     annotation_path_for_video_name,
@@ -21,11 +23,19 @@ class CorruptedAnnotationError(Exception):
 
 
 class AnnotationStore:
+    def __init__(self, video_path: Optional[Path] = None) -> None:
+        self.video_path = video_path
+
     def annotation_path_for_video_name(self, video_name: str) -> Path:
-        return annotation_path_for_video_name(video_name)
+        legacy = annotation_path_for_video_name(video_name)
+        if self.video_path is None:
+            return legacy
+        identity = hashlib.sha256(str(self.video_path.resolve()).encode("utf-8")).hexdigest()[:16]
+        return legacy.with_name("%s.%s.annotations.json" % (self.video_path.name, identity))
 
     def backup_path_for_video_name(self, video_name: str) -> Path:
-        return annotation_backup_path_for_video_name(video_name)
+        path = self.annotation_path_for_video_name(video_name)
+        return path.with_name(path.name + ".bak")
 
     def legacy_autosave_path_for_video_name(self, video_name: str) -> Path:
         return legacy_autosave_path_for_video_name(video_name)
@@ -39,8 +49,15 @@ class AnnotationStore:
             paths["annotation"] = annotation_path
         if backup_path.exists():
             paths["backup"] = backup_path
-        if legacy_autosave_path.exists():
+        if self.video_path is None and legacy_autosave_path.exists():
             paths["legacy_autosave"] = legacy_autosave_path
+        if self.video_path is not None and not paths:
+            # Older files have no path identity. Only offer these for explicit migration.
+            for key, path in (("legacy_annotation", annotation_path_for_video_name(video_name)),
+                              ("legacy_backup", annotation_backup_path_for_video_name(video_name)),
+                              ("legacy_autosave", legacy_autosave_path)):
+                if path.exists():
+                    paths[key] = path
         return paths
 
     def load(self, path: Path) -> AnnotationDocument:
@@ -62,20 +79,32 @@ class AnnotationStore:
         legacy_autosave_path = self.legacy_autosave_path_for_video_name(
             document.video_name
         )
-        if legacy_autosave_path.exists():
+        if self.video_path is None and legacy_autosave_path.exists():
             try:
                 legacy_autosave_path.unlink()
             except OSError:
                 pass
         return annotation_path
 
+    def export(self, document: AnnotationDocument, path: Path) -> Path:
+        if path.suffix.lower() != ".json":
+            raise ValueError("Choose a .json file for annotations.")
+        if self.video_path is not None:
+            source = self.video_path.resolve()
+            if path.resolve() == source or (path.exists() and source.exists() and path.samefile(source)):
+                raise ValueError("The annotation destination cannot be the source video.")
+        self._backup_existing_annotation(path)
+        self._write_json(path, document.to_dict())
+        return path
+
     def delete_project(self, video_name: str) -> List[Path]:
         deleted = []
         paths = (
             self.annotation_path_for_video_name(video_name),
             self.backup_path_for_video_name(video_name),
-            self.legacy_autosave_path_for_video_name(video_name),
         )
+        if self.video_path is None:
+            paths += (self.legacy_autosave_path_for_video_name(video_name),)
         for path in paths:
             if path.exists():
                 path.unlink()
@@ -91,6 +120,11 @@ class AnnotationStore:
         except (JSONDecodeError, OSError, UnicodeDecodeError):
             return
         if not isinstance(previous_data, dict):
+            return
+        try:
+            if validate_document(AnnotationDocument.from_dict(previous_data)):
+                return
+        except (ValueError, TypeError, AttributeError, OverflowError):
             return
         backup_path = annotation_path.with_name("%s.bak" % annotation_path.name)
         self._write_json(backup_path, previous_data)

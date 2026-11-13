@@ -19,6 +19,7 @@ class AnnotationDocument:
     app_version: str = APP_VERSION
     is_autosave: bool = False
     created_at: Optional[str] = None
+    active_work_seconds: float = 0.0
 
     def refresh_interval_ids(self) -> None:
         for index, interval in enumerate(self.intervals, start=1):
@@ -37,6 +38,7 @@ class AnnotationDocument:
             "video_name": self.video_name,
             "current_event_type": self.current_event_type.strip() or DEFAULT_EVENT_TYPE,
             "last_playback_position_seconds": round(self.last_playback_position_seconds, 3),
+            "active_work_seconds": round(self.active_work_seconds, 3),
             "video_metadata": self.video_metadata.to_dict(),
             "intervals": [interval.to_dict() for interval in self.intervals],
         }
@@ -62,6 +64,7 @@ class AnnotationDocument:
             app_version=data.get("app_version") or APP_VERSION,
             is_autosave=bool(data.get("is_autosave", False)),
             created_at=data.get("created_at"),
+            active_work_seconds=data.get("active_work_seconds", 0.0),
         )
         document.refresh_interval_ids()
         return document

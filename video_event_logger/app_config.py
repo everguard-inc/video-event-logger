@@ -3,7 +3,7 @@ from typing import Tuple
 
 
 APP_NAME = "Video Event Logger"
-APP_VERSION = "0.3.5"
+APP_VERSION = "0.3.10"
 SCHEMA_VERSION = "1.0"
 APP_PACKAGE_DIR = Path(__file__).resolve().parent
 APP_ICON_PATH = APP_PACKAGE_DIR / "assets" / "app_icon.svg"
