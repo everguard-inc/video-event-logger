@@ -61,11 +61,12 @@ if [ -z "$APP_VERSION" ]; then
 fi
 
 PYTHON_VERSION="$(python -c 'import platform; print(platform.python_version())')"
+PYTHON_SSL_VERSION="$(python -c 'import ssl; assert ssl.OPENSSL_VERSION_INFO[0] == 3; print(ssl.OPENSSL_VERSION)')"
 PYINSTALLER_VERSION="$(python -c 'import PyInstaller; print(PyInstaller.__version__)')"
 PYSIDE_VERSION="$(python -c 'import PySide6; print(PySide6.__version__)')"
 PYTHON_VLC_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("python-vlc"))')"
 OPENSSL_RUNTIME_VERSION="$(
-  LD_LIBRARY_PATH=/opt/video-event-logger-openssl/lib64 \
+  LD_LIBRARY_PATH=/opt/video-event-logger-openssl/lib \
     /opt/video-event-logger-openssl/bin/openssl version
 )"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(date +%s)}"
@@ -84,6 +85,7 @@ BUILD_DATE_UTC="${BUILD_DATE_UTC:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
   echo "Target architecture: amd64 (x86_64)"
   echo "Ubuntu base version: 20.04"
   echo "Python version: $PYTHON_VERSION"
+  echo "Python SSL version: $PYTHON_SSL_VERSION"
   echo "PyInstaller version: $PYINSTALLER_VERSION"
   echo "PySide6 version: $PYSIDE_VERSION"
   echo "python-vlc version: $PYTHON_VLC_VERSION"

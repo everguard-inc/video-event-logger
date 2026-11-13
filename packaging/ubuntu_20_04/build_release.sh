@@ -78,6 +78,8 @@ if [ ! -f "$ARCHIVE_PATH" ]; then
   exit 1
 fi
 
+bash packaging/ubuntu_20_04/validate_release_runtime.sh "$ARCHIVE_PATH"
+
 echo
 echo "Validated release archive:"
 echo "  $ARCHIVE_PATH"

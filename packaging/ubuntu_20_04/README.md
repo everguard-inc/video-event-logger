@@ -39,6 +39,8 @@ Debug mode builds the same `onedir` layout with PyInstaller `console=True` and `
 
 ## What the build validates
 
+Python is compiled against the private OpenSSL 3 installation before packaging, so both Python HTTPS downloads and Qt HTTPS uploads use the bundled OpenSSL 3 libraries. The package must not require system `libssl.so.1.1` or `libcrypto.so.1.1`. OpenSSL uses `/etc/ssl` for the system trust store.
+
 Before any archive is created, `validate_build.sh` verifies:
 
 - builder architecture is `x86_64`/`amd64`;
@@ -52,6 +54,14 @@ Before any archive is created, `validate_build.sh` verifies:
 - the OpenSSL 3 `libcrypto`/`libssl` runtime and its license are bundled, and Qt reports working TLS support;
 - `BUILD_INFO.txt` contains the required version/build metadata;
 - the packaged `--smoke-test` initializes Qt, loads system libVLC, and creates a libVLC Instance plus MediaPlayer.
+
+After archive creation, the host build script also runs the real installer and installed launcher in a separate Ubuntu 24.04 runtime container. This environment has no OpenSSL 1.1 or private builder OpenSSL installation. Repeat that check for any existing archive with:
+
+```bash
+bash packaging/ubuntu_20_04/validate_release_runtime.sh release/video-event-logger-v0.3.9-ubuntu20.04-amd64.tar.gz
+```
+
+This headless installation check complements manual video, audio, and desktop integration tests.
 
 Useful manual diagnostics inside an Ubuntu 20.04 environment:
 

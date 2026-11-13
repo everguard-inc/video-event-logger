@@ -14,7 +14,7 @@ fail() {
   exit 1
 }
 
-for command_name in file ldd objdump find grep sort; do
+for command_name in file ldd objdump readelf find grep sort; do
   command -v "$command_name" >/dev/null 2>&1 || fail "missing command: $command_name"
 done
 
@@ -48,6 +48,10 @@ for candidate in "${ELF_FILES[@]}"; do
   esac
 
   checked_elf_count=$((checked_elf_count + 1))
+  dynamic_section="$(readelf -d "$candidate")"
+  if grep -Eq 'NEEDED.*\[lib(ssl|crypto)\.so\.1\.1\]' <<< "$dynamic_section"; then
+    fail "legacy OpenSSL 1.1 dependency in $candidate; rebuild Python against bundled OpenSSL 3"
+  fi
   if ! ldd_output="$(LD_LIBRARY_PATH="$DIST_LD_LIBRARY_PATH" ldd "$candidate" 2>&1)"; then
     echo "$ldd_output" >&2
     fail "ldd could not inspect $candidate"
@@ -107,6 +111,22 @@ OPENSSL_SSL_RUNTIME="$(find "$DIST_DIR" -type f -name 'libssl.so.3' -print -quit
 echo "OpenSSL crypto runtime: $OPENSSL_CRYPTO_RUNTIME"
 echo "OpenSSL TLS runtime: $OPENSSL_SSL_RUNTIME"
 
+for module in _ssl _hashlib; do
+  extension="$(find "$DIST_RUNTIME_DIR" -type f -name "${module}.*.so" -print -quit)"
+  [ -n "$extension" ] || fail "Python $module extension is missing"
+  extension_ldd="$(LD_LIBRARY_PATH="$DIST_LD_LIBRARY_PATH" ldd "$extension")"
+  libraries=(libcrypto.so.3)
+  if [ "$module" = _ssl ]; then
+    libraries+=(libssl.so.3)
+  fi
+  for library in "${libraries[@]}"; do
+    resolved="$(awk -v name="$library" '$1 == name {print $3}' <<< "$extension_ldd")"
+    [ -n "$resolved" ] || fail "$module does not use $library"
+    [ "$(readlink -f "$resolved")" = "$(readlink -f "$DIST_RUNTIME_DIR/$library")" ] \
+      || fail "$module resolves $library outside the bundle: $resolved"
+  done
+done
+
 OPENSSL_LICENSE="$(find "$DIST_DIR" -type f -path '*/licenses/openssl/LICENSE.txt' -print -quit)"
 [ -n "$OPENSSL_LICENSE" ] || fail "bundled OpenSSL license was not found"
 
@@ -128,6 +148,8 @@ for metadata_field in \
 done
 grep -q '^Bundled OpenSSL version: OpenSSL 3\.' "$BUILD_INFO_PATH" \
   || fail "BUILD_INFO.txt lacks the bundled OpenSSL 3 version"
+grep -q '^Python SSL version: OpenSSL 3\.' "$BUILD_INFO_PATH" \
+  || fail "Python must be built against OpenSSL 3"
 
 if ! command -v vlc >/dev/null 2>&1 || [ ! -f /usr/lib/x86_64-linux-gnu/libvlc.so.5 ]; then
   fail "builder VLC/libVLC is unavailable for the packaged smoke test"

@@ -8,7 +8,7 @@ project_root = Path(SPECPATH).resolve().parents[1]
 entrypoint = project_root / "video_event_logger" / "main.py"
 app_icon = project_root / "video_event_logger" / "assets" / "app_icon.svg"
 openssl_prefix = Path("/opt/video-event-logger-openssl")
-openssl_lib_dir = openssl_prefix / "lib64"
+openssl_lib_dir = openssl_prefix / "lib"
 build_mode = os.environ.get("BUILD_MODE", "release").strip().lower()
 if build_mode not in {"debug", "release"}:
     raise ValueError("BUILD_MODE must be 'debug' or 'release', got: %s" % build_mode)
@@ -54,8 +54,8 @@ a = Analysis(
     optimize=0,
 )
 # Python's bundled _ctypes extension is linked against Ubuntu 20.04's
-# libffi.so.7. Qt 6.7 needs OpenSSL 3 for HTTPS, while Ubuntu 20.04 provides
-# OpenSSL 1.1, so the explicitly listed OpenSSL 3 runtime is also retained.
+# libffi.so.7. Python _ssl/_hashlib and Qt both use the explicitly listed
+# private OpenSSL 3 runtime; neither may depend on system OpenSSL 1.1.
 # glibc and system VLC remain excluded.
 a.exclude_system_libraries(list_of_exceptions=["libffi.so.*"])
 a.binaries = [entry for entry in a.binaries if not is_system_vlc_runtime(entry)]

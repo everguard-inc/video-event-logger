@@ -37,21 +37,6 @@ RUN apt-get update \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN wget -q "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz" \
-    && tar -xzf "Python-${PYTHON_VERSION}.tgz" \
-    && cd "Python-${PYTHON_VERSION}" \
-    && ./configure --enable-shared --enable-optimizations --with-ensurepip=install \
-    && make -j"$(nproc)" \
-    && make altinstall \
-    && cd /app \
-    && echo "/usr/local/lib" > /etc/ld.so.conf.d/python3.12.conf \
-    && ldconfig \
-    && rm -rf "Python-${PYTHON_VERSION}" "Python-${PYTHON_VERSION}.tgz" \
-    && python3.12 --version \
-    && ldd "$(command -v python3.12)" \
-    && ! ldd "$(command -v python3.12)" | grep -F "not found" \
-    && ldconfig -p | grep -F "libpython3.12"
-
 RUN wget -q "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_BUNDLE_VERSION}/openssl-${OPENSSL_BUNDLE_VERSION}.tar.gz" \
     && wget -q "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_BUNDLE_VERSION}/openssl-${OPENSSL_BUNDLE_VERSION}.tar.gz.sha256" \
     && sha256sum -c "openssl-${OPENSSL_BUNDLE_VERSION}.tar.gz.sha256" \
@@ -59,17 +44,42 @@ RUN wget -q "https://github.com/openssl/openssl/releases/download/openssl-${OPEN
     && cd "openssl-${OPENSSL_BUNDLE_VERSION}" \
     && ./Configure linux-x86_64 shared \
         --prefix=/opt/video-event-logger-openssl \
-        --openssldir=/opt/video-event-logger-openssl/ssl \
+        --libdir=lib \
+        --openssldir=/etc/ssl \
     && make -j"$(nproc)" \
     && make install_sw \
     && cp LICENSE.txt /opt/video-event-logger-openssl/LICENSE.txt \
-    && LD_LIBRARY_PATH=/opt/video-event-logger-openssl/lib64 \
+    && LD_LIBRARY_PATH=/opt/video-event-logger-openssl/lib \
         /opt/video-event-logger-openssl/bin/openssl version \
     && cd /app \
     && rm -rf \
         "openssl-${OPENSSL_BUNDLE_VERSION}" \
         "openssl-${OPENSSL_BUNDLE_VERSION}.tar.gz" \
         "openssl-${OPENSSL_BUNDLE_VERSION}.tar.gz.sha256"
+
+# Build Python against the same private OpenSSL 3 runtime used by Qt.
+RUN echo "/opt/video-event-logger-openssl/lib" > /etc/ld.so.conf.d/video-event-logger-openssl.conf \
+    && ldconfig \
+    && wget -q "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz" \
+    && tar -xzf "Python-${PYTHON_VERSION}.tgz" \
+    && cd "Python-${PYTHON_VERSION}" \
+    && ./configure --enable-shared --enable-optimizations --with-ensurepip=install \
+        --with-openssl=/opt/video-event-logger-openssl \
+        --with-openssl-rpath=no \
+    && make -j"$(nproc)" \
+    && make altinstall \
+    && cd /app \
+    && echo "/usr/local/lib" > /etc/ld.so.conf.d/python3.12.conf \
+    && ldconfig \
+    && rm -rf "Python-${PYTHON_VERSION}" "Python-${PYTHON_VERSION}.tgz" \
+    && python3.12 --version
+
+# OpenSSL loads certificates from capath lazily; an empty get_ca_certs()
+# before the first connection does not mean the system trust store is missing.
+RUN python3.12 -c 'import ssl; print(ssl.OPENSSL_VERSION); paths = ssl.get_default_verify_paths(); print(paths); assert ssl.OPENSSL_VERSION_INFO[0] == 3, "Python must use OpenSSL 3"; assert paths.cafile or paths.capath, "System trust store is missing"; context = ssl.create_default_context(); context.load_verify_locations(cafile="/etc/ssl/certs/ca-certificates.crt"); assert context.get_ca_certs(), "System CA bundle is empty"' \
+    && ldd "$(command -v python3.12)" \
+    && ! ldd "$(command -v python3.12)" | grep -F "not found" \
+    && ldconfig -p | grep -F "libpython3.12"
 
 COPY . /app
 
